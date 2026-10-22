@@ -357,7 +357,7 @@ class ProviderCommandTests(IntegrationTestCase):
         result = self.wos.run("/provider\n0\n/exit\n")
 
         self.assertNoCrash(result)
-        for number, name in enumerate(sorted(SUPPORTED_PROVIDERS), start=1):
+        for number, name in enumerate(["cloud", "ollama"] + sorted(SUPPORTED_PROVIDERS - {"cloud", "ollama"}), start=1):
             with self.subTest(provider=name):
                 self.assertRegex(result.stdout, rf"{number}\. {name}\b")
 

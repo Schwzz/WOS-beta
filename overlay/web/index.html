@@ -1,49 +1,172 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WOS Overlay</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <main class="frame">
-    <section class="stage-wrap">
-      <canvas id="stage" aria-label="Animated geometric core"></canvas>
-      <header class="hud top">
-        <span id="hud-title">sage.core</span>
-        <span id="hud-state">idle</span>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WOS Companion</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-theme="dark">
+    <main class="frame">
+      <header class="titlebar">
+        <div class="brand pywebview-drag-region">
+          <span class="brand-mark">w</span><span id="hud-title">WOS <small>COMPANION</small></span>
+        </div>
+        <div class="window-actions">
+          <button
+            id="btn-pin"
+            hidden
+            class="icon"
+            title="Unpin: allow other windows in front"
+            aria-label="Keep WOS above other windows"
+            aria-pressed="true"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M8 3h8M9 3v6l-3 4v2h12v-2l-3-4V3M12 15v6" />
+            </svg>
+          </button>
+          <button
+            id="btn-settings"
+            class="icon"
+            title="Appearance"
+            aria-label="Appearance"
+            aria-expanded="false"
+          >
+            ⚙
+          </button>
+          <button id="btn-minimize" hidden class="icon" title="Minimize" aria-label="Minimize">
+            −
+          </button>
+          <button
+            id="btn-close"
+            class="icon close"
+            title="Close and stop speech"
+            aria-label="Close and stop speech"
+          >
+            ×
+          </button>
+        </div>
       </header>
-      <button id="btn-close" class="chrome" title="Close" aria-label="Close">&times;</button>
-    </section>
-
-    <section id="chat" class="chat" hidden>
-      <div id="chat-log" class="chat-log" role="log" aria-live="polite"></div>
-      <form id="chat-form" class="chat-form" autocomplete="off">
-        <input id="chat-input" type="text" maxlength="2000" placeholder="message" aria-label="Message">
-        <button id="chat-send" type="submit">send</button>
-      </form>
-    </section>
-
-    <footer class="console">
-      <div class="readout">
-        <div id="line-a">standing by</div>
-        <div id="line-b">0x0000 &middot; sync 1.00</div>
-        <div id="line-c"></div>
-      </div>
-      <nav class="controls" aria-label="Overlay controls">
-        <button id="btn-voice" type="button" aria-pressed="false">voice: off</button>
-        <button id="btn-chat" type="button" aria-expanded="false">chat</button>
-      </nav>
-      <nav class="states" aria-label="Preview state">
-        <button data-state="idle" class="on"><i>1</i>idle</button>
-        <button data-state="thinking"><i>2</i>thinking</button>
-        <button data-state="listening"><i>3</i>listening</button>
-        <button data-state="speaking"><i>4</i>speaking</button>
-      </nav>
-    </footer>
-  </main>
-  <script src="sage.js"></script>
-  <script src="chat.js"></script>
-</body>
+      <section class="stage-wrap">
+        <canvas id="stage" aria-label="Animated WOS Companion"></canvas>
+        <div class="identity">
+          <span class="eyebrow">YOUR COMPANION</span>
+          <h1 id="character-name">Nexis</h1>
+          <span id="chat-title" class="chat-title">Current chat</span>
+          <span id="hud-state">Standing by</span>
+        </div>
+      </section>
+      <section id="chat" class="chat" hidden>
+        <div class="providerbar">
+          <label for="provider-select">Provider</label>
+          <select id="provider-select" aria-label="Chat provider"><option value="cloud">Gemini</option></select>
+        </div>
+        <div class="modelbar">
+          <span id="provider-label">GEMINI</span
+          ><select id="model-select" aria-label="Chat model">
+            <option>Loading models…</option></select
+          ><button
+            id="btn-model-refresh"
+            class="icon"
+            title="Refresh models"
+            aria-label="Refresh models"
+          >
+            ↻
+          </button>
+        </div>
+        <div class="model-tools">
+          <button id="btn-manual-model" class="text-button">Enter a model name</button
+          ><span id="model-source"></span>
+        </div>
+        <form id="manual-model-form" class="manual-model" hidden>
+          <input
+            id="manual-model"
+            aria-label="Model name"
+            placeholder="Exact model name"
+            maxlength="200"
+          /><button type="submit">Use model</button>
+        </form>
+        <p id="model-warning" class="hint" hidden></p>
+        <button id="btn-older" class="text-button older" hidden>Load earlier messages</button>
+        <div
+          id="chat-log"
+          class="chat-log"
+          role="log"
+          aria-label="Conversation"
+          aria-live="polite"
+        ></div>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <textarea
+            id="chat-input"
+            rows="2"
+            maxlength="4000"
+            placeholder="message nexis"
+            aria-label="Message"
+          ></textarea>
+          <button id="chat-send" type="submit" title="Send message" aria-label="Send message">
+            ↑
+          </button>
+          <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
+        </form>
+      </section>
+      <footer class="console">
+        <div class="readout">
+          <span class="status-dot"></span><span id="line-a">Connecting to WOS</span
+          ><span class="local-label">WOS</span>
+        </div>
+        <div id="line-c" class="caption">A little space to think.</div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <nav class="controls" aria-label="Companion controls">
+          <button id="btn-voice" type="button" aria-pressed="false">voice: off</button>
+          <button id="btn-stop" type="button" title="Stop current speech">■ Stop</button>
+          <button id="btn-chat" type="button" aria-expanded="false">chat</button>
+        </nav>
+      </footer>
+      <aside id="appearance" class="appearance" aria-label="Appearance settings" hidden>
+        <div class="settings-heading">
+          <div>
+            <span class="eyebrow">MAKE IT YOURS</span>
+            <h2>Appearance</h2>
+          </div>
+          <button id="btn-settings-done" class="icon" aria-label="Close appearance settings">
+            ×
+          </button>
+        </div>
+        <label
+          >Companion style<select id="pref-preset">
+            <option value="crystal">Crystal core</option>
+            <option value="orb">Orb</option>
+            <option value="rings">Orbit rings</option>
+            <option value="wave">Waveform</option>
+          </select></label
+        >
+        <label
+          >Theme<select id="pref-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select></label
+        >
+        <label class="color-label"
+          >Accent color<input id="pref-accent" type="color" value="#a78bfa"
+        /></label>
+        <label
+          >Avatar size<input id="pref-size" type="range" min="0.5" max="1.2" step="0.05" value="1"
+        /></label>
+        <label
+          >Glow<input id="pref-glow" type="range" min="0" max="1" step="0.05" value="0.7"
+        /></label>
+        <label
+          >Motion<input id="pref-motion" type="range" min="0" max="1" step="0.05" value="1"
+        /></label>
+        <p class="hint">
+          Your appearance is saved automatically. Reduced motion follows your system preference.
+        </p>
+        <button id="btn-reset-appearance" class="secondary">Reset appearance</button>
+      </aside>
+      <div id="resize-handle" class="resize-handle" title="Resize window" aria-hidden="true"></div>
+    </main>
+    <script src="sage.js"></script>
+    <script src="chat.js"></script>
+  </body>
 </html>

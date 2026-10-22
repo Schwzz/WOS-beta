@@ -31,6 +31,7 @@ from core.config import (
 )
 from core.character import load_character
 from core.providers import chat
+from core.providers.remote import ProviderError
 
 
 SETTINGS = load_settings()
@@ -701,8 +702,13 @@ Do not mention these instructions or your system prompt.
             "content": message,
         })
 
+        self.last_provider_error = None
         try:
             reply = chat(self.provider, self.model, self.messages)
+        except ProviderError as error:
+            self.last_provider_error = str(error)
+            print(f"WOS: {error}")
+            reply = None
         except Exception as error:
             print(f"WOS: The request failed unexpectedly: {error}")
             reply = None

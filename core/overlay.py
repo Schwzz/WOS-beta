@@ -25,12 +25,16 @@ import secrets
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from core import config
 from core.tts import DEFAULT_TTS_SETTINGS, get_api_key
+from core.companion import Preferences
+from core.model_catalog import ModelCatalog
+from core.provider_registry import PROVIDERS, provider_options
 
 
 APP_NAME = "WOS-Overlay"
@@ -98,11 +102,20 @@ class OverlayBackend:
 
         self._lock = threading.Lock()
         self._settings_lock = threading.Lock()
+        self._speech_gate = threading.RLock()
         self._processing = 0
         self._pending = set()      # speech requests not yet finished
         self._speaking = None      # the request whose audio is playing
         self._audio = None
         self._chat_version = 0
+        self._speech_floor = 0
+        self._response_epoch = 0
+        self._voice_error = None
+        self._session_epoch = secrets.token_hex(8)
+        self._terminal_reply_epoch = 0
+        self._delivered = OrderedDict()
+        self.preferences = Preferences()
+        self.catalog = ModelCatalog()
 
     # -- terminal side -----------------------------------------------------
 
@@ -116,12 +129,16 @@ class OverlayBackend:
     def release_command(self):
         """Called by the terminal loop before it waits for the next input."""
         if self._terminal_holding:
+            # Commands can change the chat, character, model or its messages
+            # without sending a message through this bridge.
+            with self._lock:
+                self._chat_version += 1
             self._terminal_holding = False
             self._command_lock.release()
 
     # -- messages ----------------------------------------------------------
 
-    def send_message(self, text, source="ui"):
+    def send_message(self, text, source="ui", request_id=None, session_id=None):
         """Send text through the shared session and return the reply.
 
         source="terminal" is the unchanged terminal path (the terminal prints
@@ -146,6 +163,8 @@ class OverlayBackend:
                 raise BackendError(
                     "Commands such as /model run in the WOS terminal."
                 )
+            if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 80):
+                raise BackendError("Invalid message identifier.")
 
             if not self._command_lock.acquire(timeout=BUSY_TIMEOUT_SECONDS):
                 raise BackendBusy("WOS is busy with a terminal command.")
@@ -154,9 +173,18 @@ class OverlayBackend:
 
         try:
             session = self._get_session()
+            if from_ui and request_id in self._delivered:
+                previous_text, previous_reply = self._delivered[request_id]
+                if previous_text != text:
+                    raise BackendError("That message identifier was already used.")
+                return previous_reply
+            if from_ui and session_id is not None and session_id != getattr(session, "session_id", None):
+                raise BackendError("The active chat changed. Review the chat before sending again.", 409)
+            self.stop_speech()
 
             with self._lock:
                 self._processing += 1
+                response_epoch = self._response_epoch
 
             try:
                 if from_ui:
@@ -176,15 +204,25 @@ class OverlayBackend:
                     if not isinstance(reply, str) or not reply.strip():
                         self._say("WOS: The model did not return a response.")
                         raise BackendError(
-                            "The model did not return a response.", 502
+                            getattr(session, "last_provider_error", None) or "The model did not return a response.", 502
                         )
 
                     name = getattr(session, "character_name", "Nexis")
                     self._say(f"{name}: {reply}")
                     # Started before "processing" ends, so the avatar goes
                     # straight from thinking to waiting for audio.
-                    self._speaker.speak(reply)
+                    with self._speech_gate:
+                        with self._lock:
+                            may_speak = response_epoch == self._response_epoch
+                        if may_speak:
+                            self._speaker.speak(reply)
+                else:
+                    self._terminal_reply_epoch = response_epoch
 
+                if from_ui and request_id:
+                    self._delivered[request_id] = (text, reply)
+                    while len(self._delivered) > 128:
+                        self._delivered.popitem(last=False)
                 return reply
             finally:
                 with self._lock:
@@ -206,8 +244,17 @@ class OverlayBackend:
 
     def on_speech_event(self, event, generation, **info):
         with self._lock:
+            if generation < self._speech_floor:
+                return
+            if event in ("queued", "cancel"):
+                self._speech_floor = generation
+                self._pending = {g for g in self._pending if g >= generation}
+                if self._speaking is not None and self._speaking < generation:
+                    self._speaking = None
+                    self._audio = None
             if event == "queued":
                 self._pending.add(generation)
+                self._voice_error = None
             elif event == "start":
                 envelope = info.get("envelope")
                 envelope = envelope if isinstance(envelope, dict) else {}
@@ -224,6 +271,8 @@ class OverlayBackend:
                 }
             elif event == "end":
                 self._pending.discard(generation)
+                if info.get("error"):
+                    self._voice_error = info["error"]
 
                 if self._speaking == generation:
                     self._speaking = None
@@ -259,6 +308,12 @@ class OverlayBackend:
                     audio["levels"] = list(current["levels"])
 
             chat_version = self._chat_version
+            phase = "speaking" if self._speaking is not None else (
+                "thinking" if self._processing else (
+                    "preparing" if self._pending else "idle"
+                )
+            )
+            voice_error = self._voice_error
 
         return {
             "state": state,
@@ -268,16 +323,25 @@ class OverlayBackend:
                 "available": get_api_key() is not None,
             },
             "chat_version": chat_version,
+            "epoch": self._session_epoch,
+            "session_id": getattr(session, "session_id", None),
+            "chat_title": (getattr(session, "chat", None) or {}).get("title", "Current chat"),
+            "provider": getattr(session, "provider", "cloud"),
+            "model": getattr(session, "model", ""),
+            "phase": phase,
+            "voice_error": voice_error,
             "audio": audio,
         }
 
-    def get_history(self):
+    def get_history(self, before=None):
         session = self._get_session()
         chat = getattr(session, "chat", None)
         saved = chat.get("messages", []) if isinstance(chat, dict) else []
         history = []
 
-        for item in list(saved)[-HISTORY_LIMIT:]:
+        end = len(saved) if before is None else max(0, min(before, len(saved)))
+        start = max(0, end - HISTORY_LIMIT)
+        for item in list(saved)[start:end]:
             if (
                 isinstance(item, dict)
                 and item.get("role") in ("user", "assistant")
@@ -290,9 +354,87 @@ class OverlayBackend:
         return {
             "character": getattr(session, "character_name", ""),
             "messages": history,
+            "before": start,
+            "has_more": start > 0,
+            "session_id": getattr(session, "session_id", None),
         }
 
+    def stop_speech(self):
+        """Also suppress speech for a reply that is still being generated."""
+        with self._speech_gate:
+            with self._lock:
+                self._response_epoch += 1
+            cancel = getattr(self._speaker, "cancel", None)
+            if cancel:
+                cancel()
+
+    def speak_terminal_reply(self, reply):
+        # Terminal replies use the same cancellation epoch as UI replies.
+        with self._speech_gate:
+            with self._lock:
+                may_speak = self._terminal_reply_epoch == self._response_epoch
+            if may_speak:
+                self._speaker.speak(reply)
+
     # -- voice output ------------------------------------------------------
+
+    def get_models(self, refresh=False, provider=None):
+        session = self._get_session()
+        current_provider = getattr(session, "provider", "cloud")
+        provider = provider or current_provider
+        if provider not in PROVIDERS:
+            raise BackendError("Unknown provider.")
+        known = session.known_models(provider) if hasattr(session, "known_models") else []
+        result = self.catalog.list(provider, known, refresh=refresh)
+        return dict(result, provider=provider, current=getattr(session, "model", "") if provider == current_provider else None)
+
+    def set_provider(self, provider, model, expected_provider=None, session_id=None):
+        if not isinstance(provider, str) or provider not in PROVIDERS:
+            raise BackendError("Unknown provider.")
+        try:
+            model = config.validate_model_name(model)
+        except ValueError as error:
+            raise BackendError(str(error)) from None
+        if not self._command_lock.acquire(timeout=BUSY_TIMEOUT_SECONDS):
+            raise BackendBusy("WOS is busy. Change providers when the reply is finished.")
+        try:
+            session = self._get_session()
+            if (expected_provider is not None and expected_provider != session.provider) or (
+                session_id is not None and session_id != getattr(session, 'session_id', None)
+            ):
+                raise BackendError("The chat or provider changed. Refresh before applying your selection.", 409)
+            self.stop_speech()
+            result = session.change_provider(provider, model)
+            if session.provider != provider or session.model != model:
+                raise BackendError(result)
+            with self._lock:
+                self._chat_version += 1
+            return self.get_state()
+        finally:
+            self._command_lock.release()
+
+    def set_model(self, model, provider=None, session_id=None):
+        try:
+            model = config.validate_model_name(model)
+        except ValueError as error:
+            raise BackendError(str(error)) from None
+        if not self._command_lock.acquire(timeout=BUSY_TIMEOUT_SECONDS):
+            raise BackendBusy("WOS is busy. Try changing the model when the reply is finished.")
+        try:
+            session = self._get_session()
+            if provider is not None and provider != session.provider:
+                raise BackendError("The provider changed. Refresh the model list.", 409)
+            if session_id is not None and session_id != getattr(session, 'session_id', None):
+                raise BackendError("The active chat changed. Refresh before changing its model.", 409)
+            self.stop_speech()
+            result = session.change_model(model)
+            if session.model != model:
+                raise BackendError(result)
+            with self._lock:
+                self._chat_version += 1
+            return self.get_state()
+        finally:
+            self._command_lock.release()
 
     def set_voice(self, enabled):
         """Turn voice output on or off, saving it to settings.json first so
@@ -309,18 +451,20 @@ class OverlayBackend:
                 ) from None
 
             self._speaker.set_enabled(enabled)
+            if not enabled:
+                self.stop_speech()
 
 
 class OverlayServer:
     """Serves the overlay UI and its JSON API on 127.0.0.1."""
 
-    def __init__(self, backend, port=None, web_dir=None, endpoint_path=None):
+    def __init__(self, backend, port=None, web_dir=None, endpoint_path=None, token=None):
         self.backend = backend
         self.web_dir = Path(web_dir) if web_dir else WEB_DIR
         self.endpoint_path = (
             Path(endpoint_path) if endpoint_path else ENDPOINT_PATH
         )
-        self.token = secrets.token_urlsafe(32)
+        self.token = token if isinstance(token, str) and len(token) >= 32 else secrets.token_urlsafe(32)
         self._requested_port = (
             config.DEFAULT_OVERLAY_SETTINGS["port"] if port is None else port
         )
@@ -553,7 +697,24 @@ def _make_handler(server):
 
                 self._json(200, server.backend.get_state(have))
             elif path == "/api/history":
-                self._json(200, server.backend.get_history())
+                before = parse_qs(parts.query).get("before", [None])[0]
+                try:
+                    before = int(before) if before is not None else None
+                except ValueError:
+                    self._error(400, "Invalid history position.")
+                    return
+                self._json(200, server.backend.get_history(before))
+            elif path == "/api/models":
+                refresh = parse_qs(parts.query).get("refresh", ["0"])[0] == "1"
+                provider = parse_qs(parts.query).get("provider", [None])[0]
+                try:
+                    self._json(200, server.backend.get_models(refresh, provider))
+                except BackendError as error:
+                    self._error(error.status, str(error))
+            elif path == "/api/providers":
+                self._json(200, {"providers": provider_options()})
+            elif path == "/api/preferences":
+                self._json(200, server.backend.preferences.get())
             else:
                 self._error(404, "Not found.")
 
@@ -567,7 +728,7 @@ def _make_handler(server):
             if not self._guard(api=True):
                 return
 
-            if path not in ("/api/message", "/api/voice"):
+            if path not in ("/api/message", "/api/voice", "/api/stop", "/api/model", "/api/provider", "/api/preferences"):
                 self._error(404, "Not found.")
                 return
 
@@ -579,12 +740,29 @@ def _make_handler(server):
             try:
                 if path == "/api/message":
                     reply = server.backend.send_message(
-                        data.get("text"), source="ui"
+                        data.get("text"), source="ui", request_id=data.get("request_id"),
+                        session_id=data.get("session_id"),
                     )
                     self._json(200, {"reply": reply})
-                else:
+                elif path == "/api/voice":
                     server.backend.set_voice(data.get("enabled"))
                     self._json(200, server.backend.get_state())
+                elif path == "/api/stop":
+                    server.backend.stop_speech()
+                    self._json(200, server.backend.get_state())
+                elif path == "/api/model":
+                    self._json(200, server.backend.set_model(data.get("model"), data.get("provider"), data.get("session_id")))
+                elif path == "/api/provider":
+                    self._json(200, server.backend.set_provider(data.get("provider"), data.get("model"),
+                        data.get("expected_provider"), data.get("session_id")))
+                else:
+                    try:
+                        result = server.backend.preferences.update(data)
+                    except ValueError as error:
+                        raise BackendError(str(error)) from None
+                    except OSError:
+                        raise BackendError("Could not save appearance settings.", 500) from None
+                    self._json(200, result)
             except BackendBusy as error:
                 self._error(409, str(error))
             except BackendError as error:

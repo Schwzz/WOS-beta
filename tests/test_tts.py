@@ -70,7 +70,11 @@ class FakePlayer:
         self.files_existed = []
         self.contents = []
 
-    def play(self, path):
+    def play(self, path, *, cancelled=None, started=None):
+        if cancelled is not None and cancelled.is_set():
+            return
+        if started:
+            started()
         self.files_existed.append(os.path.exists(path))
         self.played.append(path)
 
@@ -616,7 +620,7 @@ class StartIntegrationTests(unittest.TestCase):
 
     def test_start_py_speaks_replies_only(self):
         source = (PROJECT_ROOT / "start.py").read_text("utf-8")
-        self.assertEqual(source.count("tts_speaker.speak("), 2)
+        self.assertEqual(source.count("overlay_backend.speak_terminal_reply("), 2)
         # Both calls sit directly after the reply is printed.
         self.assertEqual(
             source.count(
@@ -626,7 +630,7 @@ class StartIntegrationTests(unittest.TestCase):
             ),
             2,
         )
-        self.assertNotIn("tts_speaker.speak(message", source)
+        self.assertNotIn("overlay_backend.speak_terminal_reply(message", source)
 
 
 if __name__ == "__main__":
@@ -651,7 +655,7 @@ FAKE_HTTPX = {
         "    return R()\n"
     ),
     "winsound/__init__.py": (
-        "SND_FILENAME = 2\n\n\n"
+        "SND_FILENAME = 2\nSND_ASYNC = 1\nSND_NODEFAULT = 4\n\n"
         "def PlaySound(sound, flags):\n"
         "    if sound is not None:\n"
         "        with open('_tts_played.txt', 'a') as f:\n"

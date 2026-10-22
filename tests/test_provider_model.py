@@ -88,7 +88,7 @@ class ProviderMenuTests(ProviderModelTestCase):
 
         self.assertNoCrash(result)
         self.assertEqual(
-            result.stdout.count("Please enter a number from 1 to 2."), 3
+            result.stdout.count("Please enter a number from 1 to 7."), 3
         )
         self.assertEqual(self.chat_settings(),
                          ("cloud", "gemini-3.5-flash-lite"))
@@ -442,7 +442,8 @@ class DirectProviderCommandTests(ProviderModelTestCase):
 
         self.assertNoCrash(result)
         self.assertIn("Unknown provider 'skynet'", result.stdout)
-        self.assertIn("cloud, ollama", result.stdout)
+        self.assertIn("openrouter", result.stdout)
+        self.assertIn("ollama", result.stdout)
         self.assertIn("Usage: /provider [provider] [model]", result.stdout)
         self.assertEqual(self.chat_settings(),
                          ("cloud", "gemini-3.5-flash-lite"))

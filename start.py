@@ -85,6 +85,8 @@ from core.help_text import (
     suggest_topic,
 )
 from core.tts import FishAudioSpeaker
+from core.model_catalog import ModelCatalog
+from core.provider_registry import PROVIDERS, api_key
 from core.overlay import OverlayBackend, OverlayServer, overlay_port
 
 
@@ -1116,7 +1118,7 @@ def choose_provider():
     """Numbered menu of providers. Returns the provider or None."""
     show_current_settings()
 
-    providers = sorted(SUPPORTED_PROVIDERS)
+    providers = ["cloud", "ollama"] + sorted(SUPPORTED_PROVIDERS - {"cloud", "ollama"})
     labels = [
         f"{name} (current)" if name == session.provider else name
         for name in providers
@@ -1142,6 +1144,12 @@ def choose_model(provider):
     """
     installed = None
     sizes = {}
+    cloud_listing = None
+
+    if provider != "ollama":
+        cloud_listing = ModelCatalog().list(provider, session.known_models(provider), refresh=True)
+        if cloud_listing["warning"]:
+            print(f"WOS: {cloud_listing['warning']}")
 
     if provider == "ollama":
         while True:
@@ -1165,7 +1173,8 @@ def choose_model(provider):
             print("Install one first, for example: ollama pull <model>")
             return None
 
-    models = menu_models(provider, installed, session.known_models(provider))
+    models = ([item["id"] for item in cloud_listing["models"]] if cloud_listing else
+              menu_models(provider, installed, session.known_models(provider)))
     labels = [
         label_model(
             model, provider, session.provider, session.model,
@@ -1180,10 +1189,9 @@ def choose_model(provider):
     allow_other = not (provider == "ollama" and installed is not None)
 
     if not models:
-        print(
-            "WOS: Type the name of the model to use. It cannot be checked "
-            "until Ollama is running."
-        )
+        print("WOS: Type the name of the model to use. It cannot be checked until Ollama is running."
+              if provider == "ollama" else
+              "WOS: No models were discovered. Type an exact model name, or cancel.")
         return ask_model_name(provider, installed)
 
     if allow_other:
@@ -1193,6 +1201,10 @@ def choose_model(provider):
 
     if provider == "ollama" and installed is not None:
         print("These are installed on this computer.")
+    elif cloud_listing and cloud_listing["source"] in ("live", "cached"):
+        print(f"Models listed by {PROVIDERS[provider]['label']}."
+              if cloud_listing["source"] == "live" else "Using the cached provider model list.")
+        print("Listing a model does not guarantee account quota or access.")
     else:
         print("These are model names WOS already knows "
               "(from your settings and chats).")
@@ -1480,6 +1492,30 @@ def free_up_chat_slot():
 
 show_header()
 
+def choose_new_cloud_key_model():
+    if session.provider != "ollama" and api_key(session.provider):
+        import hashlib
+        import json
+        from core.config import PROJECT_ROOT
+        from core.conversation import _atomic_write_json
+        setup_name = "cloud_model_setup.json" if session.provider == "cloud" else f"{session.provider}_model_setup.json"
+        setup_path = PROJECT_ROOT / "data" / setup_name
+        fingerprint = hashlib.sha256(api_key(session.provider).encode()).hexdigest()
+        try:
+            selected_key = json.loads(setup_path.read_text("utf-8")).get("key_hash")
+        except (OSError, ValueError, AttributeError):
+            selected_key = None
+        if selected_key != fingerprint:
+            print(f"WOS: A new {PROVIDERS[session.provider]['label']} key is configured. Choose a model for this chat.")
+            choice = choose_model(session.provider)
+            if choice is not None:
+                apply_model_change(choice, check=False)
+                if session.model == choice:
+                    try:
+                        _atomic_write_json(setup_path, {"key_hash": fingerprint})
+                    except OSError:
+                        pass
+
 # Optional voice. speak() never raises and never blocks the prompt.
 try:
     tts_speaker = FishAudioSpeaker(load_settings().get("tts"), notify=print)
@@ -1493,204 +1529,241 @@ overlay_server = None
 
 if "--overlay" in sys.argv:
     try:
+        # A controlled restart retains the endpoint for browser clients too.
+        previous_port = os.environ.pop("WOS_RESTART_PORT", "")
         overlay_server = OverlayServer(
             overlay_backend,
-            port=overlay_port(load_settings().get("overlay")),
+            port=int(previous_port) if previous_port.isdigit() else overlay_port(load_settings().get("overlay")),
+            token=os.environ.pop("WOS_RESTART_TOKEN", None),
         )
         overlay_server.start()
     except (ValueError, OSError) as error:
         overlay_server = None
         print(f"WOS: The desktop overlay could not start: {error}")
 
-while True:
-    # The previous command is finished; let the overlay use the session.
-    overlay_backend.release_command()
+def run_loop():
+    while True:
+        # The previous command is finished; let the overlay use the session.
+        overlay_backend.release_command()
 
-    try:
-        message = input("You: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        print("WOS: Goodbye.")
-        break
+        try:
+            message = input("You: ").strip()
+        except KeyboardInterrupt:
+            if tts_speaker.active:
+                overlay_backend.stop_speech()
+                print("\nWOS: Speech stopped.")
+                continue
+            print("\nWOS: Goodbye.")
+            break
+        except EOFError:
+            print("\nWOS: Goodbye.")
+            break
 
-    if not message:
-        continue
-
-    overlay_backend.hold_command()
-
-    command = message.lower()
-
-    if command in ("/exit", "/quit"):
-        print("WOS: Conversation saved.")
-        break
-
-    if command == "/help":
-        show_help()
-        continue
-
-    if command.startswith("/help "):
-        show_command_help(message[len("/help "):])
-        continue
-
-    if command == "/restart":
-        print("WOS: Restarting...")
-
-        if overlay_server is not None:
-            overlay_server.close()  # free the port for the new process
-
-        restart_args = [sys.executable] + sys.argv
-
-        if os.name == "nt":
-            # os.execv on Windows does not quote arguments that contain spaces
-            # and returns control to the shell immediately. Start the new
-            # process with subprocess instead and wait for it to finish.
-            process = subprocess.Popen(restart_args)
-
-            try:
-                exit_code = process.wait()
-            except KeyboardInterrupt:
-                # Ctrl+C is delivered to the new process as well. Give it a
-                # few seconds to exit on its own, then stop it.
-                try:
-                    exit_code = process.wait(timeout=5)
-                except (subprocess.TimeoutExpired, KeyboardInterrupt):
-                    process.terminate()
-                    exit_code = process.wait()
-
-            raise SystemExit(exit_code)
-
-        os.execv(sys.executable, restart_args)
-
-    if command == "/new":
-        start_new_chat()
-        continue
-
-    if command == "/chat":
-        manage_chat("")
-        continue
-
-    if command.startswith("/chat "):
-        manage_chat(message[len("/chat "):])
-        continue
-
-    if command == "/chats":
-        show_chats()
-        continue
-
-    if command == "/character":
-        manage_character("")
-        continue
-
-    if command.startswith("/character "):
-        manage_character(message[len("/character "):])
-        continue
-
-    if command == "/switch":
-        switch_chat_command("")
-        continue
-
-    if command.startswith("/switch "):
-        switch_chat_command(message[len("/switch "):])
-        continue
-
-    if command == "/rename":
-        rename_chat("")
-        continue
-
-    if command.startswith("/rename "):
-        rename_chat(message[len("/rename "):])
-        continue
-
-    if command == "/delete":
-        delete_chat_command("")
-        continue
-
-    if command.startswith("/delete "):
-        delete_chat_command(message[len("/delete "):])
-        continue
-
-    if command == "/provider":
-        manage_provider("")
-        continue
-
-    if command.startswith("/provider "):
-        manage_provider(message[len("/provider "):])
-        continue
-
-    if command == "/model":
-        manage_model("")
-        continue
-
-    if command.startswith("/model "):
-        manage_model(message[len("/model "):])
-        continue
-
-    if command == "/defaults":
-        manage_defaults("")
-        continue
-
-    if command.startswith("/defaults "):
-        manage_defaults(message[len("/defaults "):])
-        continue
-
-    if command == "/forget":
-        print("WOS: Usage: /forget <memory>")
-        print("Example: /forget that I am learning Python")
-        continue
-
-    if command.startswith("/forget "):
-        target = message[len("/forget "):].strip()
-
-        if not target:
-            print("WOS: Usage: /forget <memory>")
+        if not message:
             continue
 
-        if target.lower().startswith(("that ", "about ")):
-            forget_request = f"Forget {target}"
-        else:
-            forget_request = f"Forget that {target}"
+        overlay_backend.hold_command()
 
-        reply = overlay_backend.send_message(forget_request, "terminal")
+        command = message.lower()
+
+        if command.startswith(("/new", "/switch", "/chat switch", "/chat clear", "/clear", "/delete", "/chat delete", "/character switch", "/model", "/provider")):
+            overlay_backend.stop_speech()
+
+        if command == "/stop":
+            overlay_backend.stop_speech()
+            print("WOS: Speech stopped.")
+            continue
+
+        if command in ("/exit", "/quit"):
+            print("WOS: Conversation saved.")
+            break
+
+        if command == "/help":
+            show_help()
+            continue
+
+        if command.startswith("/help "):
+            show_command_help(message[len("/help "):])
+            continue
+
+        if command == "/restart":
+            print("WOS: Restarting...")
+            tts_speaker.shutdown()
+
+            if overlay_server is not None:
+                os.environ["WOS_RESTART_PORT"] = str(overlay_server.port)
+                os.environ["WOS_RESTART_TOKEN"] = overlay_server.token
+                overlay_server.close()  # free the port for the new process
+
+            restart_args = [sys.executable] + sys.argv
+
+            if os.name == "nt":
+                # os.execv on Windows does not quote arguments that contain spaces
+                # and returns control to the shell immediately. Start the new
+                # process with subprocess instead and wait for it to finish.
+                process = subprocess.Popen(restart_args)
+
+                try:
+                    exit_code = process.wait()
+                except KeyboardInterrupt:
+                    # Ctrl+C is delivered to the new process as well. Give it a
+                    # few seconds to exit on its own, then stop it.
+                    try:
+                        exit_code = process.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                        process.terminate()
+                        exit_code = process.wait()
+
+                raise SystemExit(exit_code)
+
+            os.execv(sys.executable, restart_args)
+
+        if command == "/new":
+            start_new_chat()
+            continue
+
+        if command == "/chat":
+            manage_chat("")
+            continue
+
+        if command.startswith("/chat "):
+            manage_chat(message[len("/chat "):])
+            continue
+
+        if command == "/chats":
+            show_chats()
+            continue
+
+        if command == "/character":
+            manage_character("")
+            continue
+
+        if command.startswith("/character "):
+            manage_character(message[len("/character "):])
+            continue
+
+        if command == "/switch":
+            switch_chat_command("")
+            continue
+
+        if command.startswith("/switch "):
+            switch_chat_command(message[len("/switch "):])
+            continue
+
+        if command == "/rename":
+            rename_chat("")
+            continue
+
+        if command.startswith("/rename "):
+            rename_chat(message[len("/rename "):])
+            continue
+
+        if command == "/delete":
+            delete_chat_command("")
+            continue
+
+        if command.startswith("/delete "):
+            delete_chat_command(message[len("/delete "):])
+            continue
+
+        if command == "/provider":
+            manage_provider("")
+            continue
+
+        if command.startswith("/provider "):
+            manage_provider(message[len("/provider "):])
+            continue
+
+        if command == "/model":
+            manage_model("")
+            continue
+
+        if command.startswith("/model "):
+            manage_model(message[len("/model "):])
+            continue
+
+        if command == "/defaults":
+            manage_defaults("")
+            continue
+
+        if command.startswith("/defaults "):
+            manage_defaults(message[len("/defaults "):])
+            continue
+
+        if command == "/forget":
+            print("WOS: Usage: /forget <memory>")
+            print("Example: /forget that I am learning Python")
+            continue
+
+        if command.startswith("/forget "):
+            target = message[len("/forget "):].strip()
+
+            if not target:
+                print("WOS: Usage: /forget <memory>")
+                continue
+
+            if target.lower().startswith(("that ", "about ")):
+                forget_request = f"Forget {target}"
+            else:
+                forget_request = f"Forget that {target}"
+
+            reply = overlay_backend.send_message(forget_request, "terminal")
+
+            if reply is None:
+                print("WOS: The memory operation did not return a response.")
+            else:
+                print(f"{session.character_name}: {reply}")
+                overlay_backend.speak_terminal_reply(reply)
+
+            continue
+
+        if command == "/memory":
+            show_memory(session.memory)
+            continue
+
+        if command.startswith("/memory "):
+            manage_memory(message[len("/memory "):])
+            continue
+
+        if command == "/status":
+            show_status()
+            continue
+
+        if command == "/context":
+            show_context()
+            continue
+
+        if command == "/clear":
+            clear_chat()
+            continue
+
+        problem = check_unrecognized_command(message)
+
+        if problem:
+            print(problem)
+            continue
+
+        reply = overlay_backend.send_message(message, "terminal")
 
         if reply is None:
-            print("WOS: The memory operation did not return a response.")
-        else:
-            print(f"{session.character_name}: {reply}")
-            tts_speaker.speak(reply)
+            print("WOS: The model did not return a response.")
+            continue
 
-        continue
+        print(f"{session.character_name}: {reply}")
+        overlay_backend.speak_terminal_reply(reply)
 
-    if command == "/memory":
-        show_memory(session.memory)
-        continue
 
-    if command.startswith("/memory "):
-        manage_memory(message[len("/memory "):])
-        continue
-
-    if command == "/status":
-        show_status()
-        continue
-
-    if command == "/context":
-        show_context()
-        continue
-
-    if command == "/clear":
-        clear_chat()
-        continue
-
-    problem = check_unrecognized_command(message)
-
-    if problem:
-        print(problem)
-        continue
-
-    reply = overlay_backend.send_message(message, "terminal")
-
-    if reply is None:
-        print("WOS: The model did not return a response.")
-        continue
-
-    print(f"{session.character_name}: {reply}")
-    tts_speaker.speak(reply)
+try:
+    overlay_backend.hold_command()
+    try:
+        choose_new_cloud_key_model()
+    finally:
+        overlay_backend.release_command()
+    run_loop()
+except KeyboardInterrupt:
+    print("\nWOS: Interrupted. Goodbye.")
+finally:
+    tts_speaker.shutdown()
+    overlay_backend.release_command()
+    if overlay_server is not None:
+        overlay_server.close()

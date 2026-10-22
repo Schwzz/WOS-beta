@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 from array import array
 
 from core.config import DEFAULT_TTS_SETTINGS
@@ -244,18 +245,46 @@ class WinsoundPlayer:
             winsound = None
 
         self._winsound = winsound
+        self._lock = threading.Lock()
+        self._playing = None
 
-    def play(self, path):
+    def play(self, path, *, cancelled=None, started=None):
         """Play path and return when it has finished (or was stopped)."""
         if self._winsound is None:
             raise TTSError("audio playback is only supported on Windows")
 
-        self._winsound.PlaySound(path, self._winsound.SND_FILENAME)
+        cancelled = cancelled if cancelled is not None else threading.Event()
+        with wave.open(path, "rb") as audio:
+            duration = audio.getnframes() / audio.getframerate()
+
+        # Starting and stopping the native player must be serialized. The
+        # cancellation event is checked INSIDE this lock, so a late worker
+        # cannot start after stop() has already returned.
+        with self._lock:
+            if cancelled.is_set():
+                return
+            self._winsound.PlaySound(
+                path, self._winsound.SND_FILENAME
+                | self._winsound.SND_ASYNC | self._winsound.SND_NODEFAULT
+            )
+            self._playing = cancelled
+        try:
+            if started:
+                started()
+            cancelled.wait(duration + 0.03)
+        finally:
+            with self._lock:
+                if self._playing is cancelled:
+                    self._playing = None
 
     def stop(self):
         if self._winsound is not None:
             # A None sound stops any waveform sound this process is playing.
-            self._winsound.PlaySound(None, self._winsound.SND_FILENAME)
+            with self._lock:
+                if self._playing is not None:
+                    self._playing.set()
+                self._winsound.PlaySound(None, 0)
+                self._playing = None
 
 
 class FishAudioSpeaker:
@@ -280,7 +309,10 @@ class FishAudioSpeaker:
 
         self._lock = threading.Lock()
         self._generation = 0
+        self._control_lock = threading.RLock()
         self._workers = set()
+        self._jobs = {}
+        self._closed = False
         self._temp_files = set()
         self._last_notice = None
         self._atexit_registered = False
@@ -311,25 +343,27 @@ class FishAudioSpeaker:
         speech that is in progress. Never raises."""
         try:
             enabled = enabled is True
-            self.enabled = enabled
+            with self._lock:
+                self.enabled = enabled
 
             if enabled:
                 self._register_atexit()
             else:
-                with self._lock:
-                    self._generation += 1
-
-                self._stop_playback()
+                self.cancel()
         except Exception:
             pass
 
     def speak(self, text):
+        with self._control_lock:
+            return self._speak(text)
+
+    def _speak(self, text):
         """Start speaking text in the background. Returns True if a request
         was started. Never raises."""
         try:
-            if not self.enabled:
-                return False
-
+            with self._lock:
+                if not self.enabled or self._closed:
+                    return False
             text = clean_speech_text(text)
 
             if text is None:
@@ -344,15 +378,24 @@ class FishAudioSpeaker:
                 return False
 
             with self._lock:
+                if not self.enabled or self._closed:
+                    return False
                 self._generation += 1
                 generation = self._generation
+                previous = list(self._jobs.values())
+                for event in previous:
+                    event.set()
+                cancelled = threading.Event()
+                self._jobs[generation] = cancelled
 
             # Cut off whatever is still playing so replies never overlap.
             self._stop_playback()
+            if previous:
+                self._emit("cancel", generation)
 
             worker = threading.Thread(
                 target=self._run,
-                args=(generation, text, api_key),
+                args=(generation, text, api_key, cancelled),
                 name="wos-tts",
                 daemon=True,
             )
@@ -367,6 +410,7 @@ class FishAudioSpeaker:
             except Exception:
                 with self._lock:
                     self._workers.discard(worker)
+                    self._jobs.pop(generation, None)
 
                 self._emit("end", generation)
                 raise
@@ -376,18 +420,35 @@ class FishAudioSpeaker:
         except Exception:
             return False
 
+    @property
+    def active(self):
+        with self._lock:
+            return any(not event.is_set() for event in self._jobs.values())
+
+    def cancel(self):
+        """Silence current/pending speech without changing the voice setting."""
+        with self._control_lock:
+            with self._lock:
+                self._generation += 1
+                generation = self._generation
+                for event in self._jobs.values():
+                    event.set()
+            self._stop_playback()
+            self._emit("cancel", generation)
+
     def shutdown(self):
         """Stop playback and remove leftover temporary files. Never raises."""
         try:
             with self._lock:
-                self._generation += 1
+                self._closed = True
                 workers = list(self._workers)
 
-            self._stop_playback()
+            self.cancel()
 
+            deadline = time.monotonic() + 1
             for worker in workers:
                 if worker is not threading.current_thread():
-                    worker.join(timeout=3)
+                    worker.join(timeout=max(0, deadline - time.monotonic()))
 
             for path in list(self._temp_files):
                 self._remove_temp(path)
@@ -404,10 +465,13 @@ class FishAudioSpeaker:
 
     # -- background work ---------------------------------------------------
 
-    def _run(self, generation, text, api_key):
+    def _run(self, generation, text, api_key, cancelled):
         path = None
+        failure = None
 
         try:
+            if cancelled.is_set():
+                return
             audio = synthesize(
                 text, api_key, self.voice_id, self.model, post=self._post
             )
@@ -421,26 +485,33 @@ class FishAudioSpeaker:
                 return
 
             envelope = wav_envelope(audio)
-            self._emit("start", generation, envelope=envelope)
-            self._player.play(path)
+            if cancelled.is_set():
+                return
+            self._player.play(
+                path, cancelled=cancelled,
+                started=lambda: self._emit("start", generation, envelope=envelope),
+            )
 
             if self._is_current(generation):
                 self._last_notice = None
 
         except TTSError as error:
             if self._is_current(generation):
-                self._notice(str(error))
+                failure = str(error)
+                self._notice(failure)
         except Exception as error:
             if self._is_current(generation):
-                self._notice(f"unexpected error ({type(error).__name__})")
+                failure = f"unexpected error ({type(error).__name__})"
+                self._notice(failure)
         finally:
             if path is not None:
                 self._remove_temp(path)
 
             with self._lock:
                 self._workers.discard(threading.current_thread())
+                self._jobs.pop(generation, None)
 
-            self._emit("end", generation)
+            self._emit("end", generation, error=failure)
 
     def _is_current(self, generation):
         with self._lock:

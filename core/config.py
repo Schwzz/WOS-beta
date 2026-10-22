@@ -5,12 +5,13 @@ import tempfile
 from pathlib import Path
 
 from core.character import load_character
+from core.provider_registry import PROVIDERS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 
-SUPPORTED_PROVIDERS = {"cloud", "ollama"}
+SUPPORTED_PROVIDERS = set(PROVIDERS)
 
 # A model that is known to work with a provider, used when switching to that
 # provider and no model has been chosen for it yet. Ollama has no entry because

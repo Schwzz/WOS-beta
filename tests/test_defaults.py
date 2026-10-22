@@ -2,6 +2,8 @@ import json
 import unittest
 from unittest import mock
 
+from core import config
+
 from tests.helpers import Sandbox
 
 from core import conversation
@@ -41,7 +43,7 @@ class SaveDefaultsValidationTests(unittest.TestCase):
             result = session.save_defaults(provider="skynet")
 
             self.assertIn("Unsupported provider", result)
-            self.assertIn("cloud, ollama", result)
+            self.assertIn(", ".join(sorted(config.SUPPORTED_PROVIDERS)), result)
             self.assertEqual(sandbox.config_path.read_bytes(), before)
 
     def test_nonexistent_character_is_rejected(self):
@@ -305,7 +307,7 @@ class ChangeProviderAndModelTests(unittest.TestCase):
             result = session.change_provider("skynet")
 
             self.assertIn("Unknown provider", result)
-            self.assertIn("cloud, ollama", result)
+            self.assertIn(", ".join(sorted(config.SUPPORTED_PROVIDERS)), result)
             self.assertEqual(session.provider, "cloud")
 
     def test_provider_with_invalid_model_changes_nothing(self):

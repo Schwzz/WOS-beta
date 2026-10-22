@@ -88,5 +88,5 @@ def chat(model, messages):
         return reply.strip()
 
     except Exception as error:
-        print(f"WLLM: Gemini returned an error: {error}")
+        print(f"WLLM: Gemini request failed ({type(error).__name__}). Check the key, model, connection and quota.")
         return None

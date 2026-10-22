@@ -21,6 +21,7 @@ KNOWN_COMMANDS = (
     "/forget",
     "/context",
     "/status",
+    "/stop",
     "/restart",
     "/help",
     "/exit",

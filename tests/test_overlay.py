@@ -175,16 +175,16 @@ class SpeakerEventTests(unittest.TestCase):
         player = FakePlayer()
         original = player.play
 
-        def play(path):
+        def play(path, **kwargs):
             order.append("play")
-            original(path)
+            original(path, **kwargs)
 
         player.play = play
         speaker, _ = self.speaker(player=player)
         speaker.listener = lambda event, gen, **info: order.append(event)
         speaker.speak("Hello")
         speaker.wait()
-        self.assertEqual(order, ["queued", "start", "play", "end"])
+        self.assertEqual(order, ["queued", "play", "start", "end"])
 
     def test_failures_end_without_a_start(self):
         for post in (FakePost(error=ConnectionError("x")),
