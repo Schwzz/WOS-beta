@@ -4,17 +4,17 @@ Auralis opens a full-screen terminal with a quiet conversation view, teal and
 amber colors, a compact composer, slash completion, and searchable menus. The
 chat sidebar starts hidden (Ctrl+B). Provider/model details and extra shortcuts
 live in that optional sidebar rather than repeating below every conversation.
-The Companion remains another view of the same Python session.
+Desktop uses the same runtime and saved data through its own launcher.
 
 ## Run
 
 ```powershell
 python -m pip install -r requirements.txt
-.\run.bat
+.\run-terminal.bat
 ```
 
 `python start.py` opens the TUI in an interactive terminal. Add `--overlay` to
-serve the Companion too. `run.bat` launches both as before and forwards options.
+serve the local chat page too for development. `run-terminal.bat` opens only Terminal; `run.bat` now opens Desktop.
 `--tui` explicitly requests the full-screen interface; `--plain` keeps the basic
 line prompt. Redirected/piped input uses the basic prompt automatically.
 
@@ -46,7 +46,7 @@ what you typed.
 | Ctrl+C | Cancel a picker/prompt and stop current/pending speech |
 | Ctrl+Q or `/exit` | Close Auralis and stop speech |
 | PageUp / PageDown | Scroll the conversation |
-| Ctrl+B | Show/hide the chat sidebar; hidden automatically in narrow windows |
+| Ctrl+B | Show/hide the chat sidebar; advertised in the footer and hidden automatically in narrow windows |
 | Ctrl+T | Switch light/dark terminal theme |
 | Ctrl+L | Dismiss the current notice; keep activity details and chat |
 | F8 | Open/close activity details without losing your draft |
@@ -110,7 +110,7 @@ node tests/js/chat_harness.js
 node tests/js/avatar_harness.js
 ```
 
-The complete suite passes **574 tests**, including 26 terminal tests.
+The complete suite passes **613 tests**, including 26 terminal interaction tests.
 The new headless Textual tests exercise actual key events and the existing Auralis
 command loop with temporary chats and fake provider responses. They cover
 completion, filtering, provider/model selection, destructive confirmations, draft

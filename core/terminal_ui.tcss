@@ -6,7 +6,7 @@ Screen { background: $background; color: $foreground; }
 #main { width: 1fr; padding: 0 3; }
 #transcript { height: 1fr; scrollbar-size: 1 1; padding: 0 1; }
 #welcome { height: 1fr; content-align: center middle; text-align: center; color: $text-muted; }
-.speaker { height: auto; margin-top: 1; text-style: bold; color: $primary; }
+.speaker { height: auto; margin-top: 0; text-style: bold; color: $primary; }
 .speaker.user { color: $secondary; }
 .message { height: auto; padding: 0 0 1 0; margin: 0; background: transparent; }
 .message.user { color: $foreground; }

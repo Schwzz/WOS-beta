@@ -23,5 +23,7 @@ jobs:
       - run: python -m unittest discover -s tests -t .
       - run: node --check overlay/web/chat.js
       - run: node --check overlay/web/sage.js
+      - run: node --check overlay/web/desktop.js
       - run: node tests/js/chat_harness.js
       - run: node tests/js/avatar_harness.js
+      - run: node tests/js/desktop_harness.js

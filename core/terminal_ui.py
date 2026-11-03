@@ -234,7 +234,7 @@ class WosTerminal(App):
         Binding('f3', 'providers', 'Providers', show=False, priority=True),
         Binding('f4', 'characters', 'Characters', show=False, priority=True),
         Binding('f6', 'voice', 'Voice', show=False, priority=True),
-        Binding('ctrl+b', 'sidebar', 'Sidebar', show=False, priority=True),
+        Binding('ctrl+b', 'sidebar', 'Sidebar', priority=True),
         Binding('ctrl+t', 'theme', 'Theme', show=False, priority=True),
         Binding('ctrl+l', 'dismiss_output', 'Dismiss notice', show=False, priority=True),
         Binding('f8', 'details', 'Details', show=False, priority=True),

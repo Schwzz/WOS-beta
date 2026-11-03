@@ -414,8 +414,10 @@ def show_command_help(arguments):
 # ------------------------------
 
 try:
-    session = Session()
-except (ValueError, FileNotFoundError, KeyError) as error:
+    from core.runtime import ApplicationRuntime
+    runtime = ApplicationRuntime(notify=print)
+    session = runtime.session
+except (ValueError, OSError, KeyError, RuntimeError) as error:
     print(f"Auralis: Could not start: {error}")
     raise SystemExit(1)
 
@@ -1518,30 +1520,20 @@ def choose_new_cloud_key_model():
                     except OSError:
                         pass
 
-# Optional voice. speak() never raises and never blocks the prompt.
-try:
-    tts_speaker = FishAudioSpeaker(load_settings().get("tts"), notify=print)
-except (ValueError, OSError):
-    tts_speaker = FishAudioSpeaker(None, notify=print)
-
-# Shared access to this one session and speaker for the desktop overlay.
-overlay_backend = OverlayBackend(lambda: session, tts_speaker, notify=print)
-tts_speaker.listener = overlay_backend.on_speech_event
+# Both interfaces use the same application lifetime and one voice player.
+tts_speaker = runtime.speaker
+overlay_backend = runtime.backend
 overlay_server = None
 
 if "--overlay" in sys.argv:
     try:
-        # A controlled restart retains the endpoint for browser clients too.
         previous_port = os.environ.pop("WOS_RESTART_PORT", "")
-        overlay_server = OverlayServer(
-            overlay_backend,
-            port=int(previous_port) if previous_port.isdigit() else overlay_port(load_settings().get("overlay")),
+        overlay_server = runtime.start_server(
+            port=int(previous_port) if previous_port.isdigit() else None,
             token=os.environ.pop("WOS_RESTART_TOKEN", None),
         )
-        overlay_server.start()
     except (ValueError, OSError) as error:
-        overlay_server = None
-        print(f"Auralis: The desktop overlay could not start: {error}")
+        print(f"Auralis: The desktop service could not start: {error}")
 
 def run_loop():
     while True:
@@ -1784,7 +1776,7 @@ try:
 except KeyboardInterrupt:
     print("\nAuralis: Interrupted. Goodbye.")
 finally:
-    tts_speaker.shutdown()
+    runtime.close()
     # The TUI command worker owns its lock and releases it in its own finally.
     if not using_tui:
         overlay_backend.release_command()

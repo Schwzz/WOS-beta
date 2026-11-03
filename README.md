@@ -2,29 +2,31 @@
 
 Formerly WaifuOS (WOS). Existing chats, settings, and `.env` files continue to work; the repository URL and internal compatibility identifiers are unchanged.
 
-A terminal-based AI companion. Chats and memories are saved locally in a `data/` folder, which Auralis creates on first run.
+An AI companion with independent Desktop and Terminal interfaces. Chats and memories are saved locally in a `data/` folder, which Auralis creates on first run.
 
 ## Requirements
 
 - Python 3.11 or newer
-- Packages: `requests`, `python-dotenv`, `google-genai`
+- Install the packages in `requirements.txt`; Desktop uses pywebview and Windows WebView2.
 
 ```
-pip install requests python-dotenv google-genai "textual>=8.2.8,<9"
+python -m pip install -r requirements.txt
 ```
 
 The provider packages are needed whichever provider you use. Textual powers the full-screen terminal; without it Auralis falls back to the basic prompt.
 
 ## First-time setup
 
-1. Install the packages above.
+1. Install the packages above. Desktop and Terminal share the same project folder and data.
 2. Choose a provider in `config.json`, or use `/provider` after starting. `cloud` remains the Gemini ID. OpenAI, Claude, OpenRouter, DeepSeek, Grok, and Ollama are also supported. The default character is `nexis`.
-3. Set up the provider you chose (see below).
+3. Desktop offers **API keys** for provider and Fish Audio setup; Terminal can use `.env` (see below).
 4. Start Auralis from this folder:
 
 ```
-python start.py
+.\run-desktop.bat
 ```
+
+`run.bat` also opens Desktop. For Terminal, run `.\run-terminal.bat` (or `python start.py`). Desktop starts its own backend and does not require a separate terminal. See [DESKTOP.md](DESKTOP.md) for chat management, key setup, launchers, and troubleshooting.
 
 In an interactive terminal Auralis opens the full-screen UI. The sidebar starts hidden; press **Ctrl+B** to show it and **F8** for activity details. Type `/` for command suggestions or press **Ctrl+P** for the command palette. Use `python start.py --plain` for the basic prompt. See [TERMINAL.md](TERMINAL.md) for shortcuts, previews, and the review report.
 
@@ -32,9 +34,9 @@ Type `/help` to see all commands.
 
 ### Cloud providers
 
-Configure the keys you use in `.env`, then restart Auralis and use `/provider` or the
-Companion chat provider dropdown to select a provider and a discovered model.
-See the [provider/key table](OVERLAY.md#models) for setup and limitations. No model
+Use Desktop’s **API keys** panel, or configure `.env` and restart. Then use `/provider` or the
+Desktop provider dropdown to select a provider and a discovered model.
+See the [provider/key table](DESKTOP.md#providers-and-keys) for setup and limitations. No model
 is chosen automatically for a newly added provider.
 
 ### Gemini setup
@@ -109,7 +111,7 @@ Type `/provider` on its own to pick a provider from a numbered list, then pick o
 
 - **Ollama:** the list shows the models actually installed on your computer, asked from Ollama while it is running, with each model's size when Ollama reports it (for example `llama3:latest - 4.7 GB`). Pick one by number. Auralis only accepts an installed model, and tells you how to install one (`ollama pull <model>`) if you type something else.
 - **If Ollama is not running:** Auralis says so and shows an "Ollama Unavailable" menu: start Ollama and choose **Try again**, choose to **type a model name yourself** (Auralis cannot check it while Ollama is unavailable), or press Enter or `0` to cancel. Cancelling leaves your provider and model unchanged.
-- **Cloud providers:** Auralis discovers model IDs using each provider’s configured API key. Gemini filters for chat generation support; other model lists may include text models incompatible with the chat endpoint. A newly configured key opens a picker for the current chat. `/model`, `/provider`, and the Companion chat dropdown also offer discovered models. If discovery fails, Auralis identifies a cached/saved fallback and explains the error. **Other** still accepts an exact model name. Listing a model does not guarantee account access or quota.
+- **Cloud providers:** Auralis discovers model IDs using each provider’s configured API key. Gemini filters for chat generation support; other model lists may include text models incompatible with the chat endpoint. A newly configured key opens a picker in Terminal; Desktop refreshes discovery after saving a key. `/model`, `/provider`, and the Desktop model dropdown offer discovered models. If discovery fails, Auralis identifies a cached/saved fallback and explains the error. **Other** still accepts an exact model name. Listing a model does not guarantee account access or quota.
 
 **What a change affects.** `/provider` and `/model` change the **current chat only**, and Auralis tells you so after each change. New chats start with your defaults, which you change separately with `/defaults provider`, `/defaults model` and `/defaults character`.
 
@@ -127,6 +129,6 @@ The tests use Python's built-in `unittest`, installed `requests`/`python-dotenv`
 python -m unittest discover -s tests -t .
 ```
 
-## Auralis Companion
+## Auralis Desktop
 
-The resizable Companion adds a hollow Crystal core avatar that reacts to playing speech, other customizable styles, light/dark themes, chat and model controls, and a Stop speaking action. See [OVERLAY.md](OVERLAY.md) for setup, controls, screenshots, and validation details.
+Desktop is a regular resizable application with saved chats, character/provider/model selection, local API-key setup, voice controls, and an optional existing avatar panel. It starts and stops its own backend. See [DESKTOP.md](DESKTOP.md) for controls and validation. The old floating Companion window has been replaced.

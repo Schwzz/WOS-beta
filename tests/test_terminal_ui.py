@@ -43,7 +43,8 @@ class TerminalTests(unittest.IsolatedAsyncioTestCase):
             loaded = runpy.run_path(str(PROJECT_ROOT / 'start.py'), run_name='wos_terminal_test')
         # Functions resolve their module globals; runpy's returned dictionary is a copy.
         self.ns = loaded['run_loop'].__globals__
-        self.session = self.ns['session']
+        # runpy's terminal has exited and closed its Session; mount a fresh one.
+        self.session = self.ns['session'] = self.sandbox.make_session()
         self.speaker = FishAudioSpeaker({'enabled': False}, notify=lambda *_: None)
         self.addCleanup(self.speaker.shutdown)
         self.backend = OverlayBackend(lambda: self.ns['session'], self.speaker)

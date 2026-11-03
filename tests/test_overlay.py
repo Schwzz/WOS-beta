@@ -1171,20 +1171,23 @@ class StartOverlayProcessTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, err)
         self.assertNotIn("Traceback", out + err)
-        self.assertIn("The desktop overlay could not start", out)
+        self.assertIn("The desktop service could not start", out)
         self.assertIn("Conversation saved", out)
 
 
 # -------------------------------------------------- packaging / launcher
 
 class ProjectFilesTests(unittest.TestCase):
-    def test_run_bat_launches_overlay_and_terminal(self):
+    def test_run_bat_launches_desktop_and_terminal_has_separate_launcher(self):
         data = (PROJECT_ROOT / "run.bat").read_bytes()
         self.assertIn(b"\r\n", data)
-        text = data.decode().lower()
-        self.assertIn("overlay\\main.py", text)
-        self.assertIn("python start.py --overlay", text)
-        self.assertNotIn("sage-companion", text)
+        self.assertIn("run-desktop.bat", data.decode().lower())
+        desktop = (PROJECT_ROOT / "run-desktop.bat").read_text().lower()
+        terminal = (PROJECT_ROOT / "run-terminal.bat").read_text().lower()
+        self.assertIn("pythonw", desktop)
+        self.assertIn("desktop.pyw", desktop)
+        self.assertIn('start.py" --tui', terminal)
+        self.assertNotIn("--overlay", terminal)
 
     def test_requirements_add_only_what_is_needed(self):
         lines = [

@@ -11,6 +11,7 @@ const state = {
   phase: 'idle',
   epoch: 'one',
   session_id: 'session_001',
+  chat_title: 'A saved conversation',
   character: 'Nexis',
   provider: 'cloud',
   model: 'chat-alpha',
@@ -26,6 +27,17 @@ let messages = Array.from({ length: 80 }, (_, i) => ({
 let online = true,
   loseNext = false,
   stopCount = 0;
+const savedChats = [
+  { session_id: 'session_001', title: 'A saved conversation', character_id: 'nexis', provider: 'cloud', model: 'chat-alpha' },
+  { session_id: 'session_002', title: 'Another thought', character_id: 'nexis', provider: 'cloud', model: 'chat-alpha' },
+];
+const histories = new Map([['session_001', messages], ['session_002', []]]);
+let sessionNumber = 2;
+const credentialMetadata = { providers: [
+  { id: 'cloud', label: 'Gemini', configured: true, key_env: 'GEMINI_API_KEY' },
+  { id: 'openai', label: 'OpenAI', configured: false, key_env: 'OPENAI_API_KEY' },
+  { id: 'ollama', label: 'Ollama', configured: true, key_env: null },
+], voice: { configured: false } };
 const sent = [],
   dedup = new Map();
 const server = http.createServer(async (req, res) => {
@@ -45,6 +57,47 @@ const server = http.createServer(async (req, res) => {
       data = JSON.parse(text || '{}');
     }
     if (url.pathname === '/api/state') return json(200, state);
+    if (url.pathname === '/api/chats') {
+      if (req.method === 'GET') return json(200, { chats: savedChats, session_id: state.session_id });
+      if (data.expected_session_id !== state.session_id) return json(409, { error: 'The active chat changed.' });
+      histories.set(state.session_id, messages);
+      let chat = savedChats.find((item) => item.session_id === data.session_id);
+      if (data.action === 'new') {
+        chat = { session_id: 'session_00' + (++sessionNumber), title: 'New chat', character_id: 'nexis' };
+        savedChats.push(chat); histories.set(chat.session_id, []);
+      } else if (!chat) return json(404, { error: 'Chat not found.' });
+      if (data.action === 'rename') chat.title = data.title;
+      if (data.action === 'clear') {
+        if (data.confirm !== true) return json(400, { error: 'Confirmation required.' });
+        histories.set(chat.session_id, []);
+      }
+      if (data.action === 'delete') {
+        if (data.confirm !== true) return json(400, { error: 'Confirmation required.' });
+        savedChats.splice(savedChats.indexOf(chat), 1); histories.delete(chat.session_id); chat = savedChats[0];
+      }
+      state.session_id = chat.session_id; state.chat_title = chat.title;
+      state.character = chat.character_id === 'luna' ? 'Luna' : 'Nexis';
+      messages = histories.get(state.session_id) || []; state.chat_version++;
+      return json(200, state);
+    }
+    if (url.pathname === '/api/characters') return json(200, { characters: [
+      { id: 'nexis', name: 'Nexis' }, { id: 'luna', name: 'Luna' },
+    ], current: state.character.toLowerCase() });
+    if (url.pathname === '/api/character') {
+      if (data.session_id !== state.session_id) return json(409, { error: 'Chat changed.' });
+      state.character = data.character === 'luna' ? 'Luna' : 'Nexis';
+      savedChats.find((item) => item.session_id === state.session_id).character_id = data.character;
+      return json(200, state);
+    }
+    if (url.pathname === '/api/credentials') {
+      if (req.method === 'POST') {
+        if (data.key === 'invalid-test-key') return json(400, { error: 'Synthetic credential rejected' });
+        const item = data.provider === 'fish_audio' ? credentialMetadata.voice : credentialMetadata.providers.find((item) => item.id === data.provider);
+        item.configured = true;
+      }
+      return json(200, credentialMetadata);
+    }
+
     if (url.pathname === '/api/history') {
       const end = url.searchParams.has('before')
         ? +url.searchParams.get('before')
@@ -119,7 +172,7 @@ const server = http.createServer(async (req, res) => {
     return json(404, { error: 'Unknown route' });
   }
   const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-  if (!['index.html', 'style.css', 'chat.js', 'sage.js'].includes(name)) {
+  if (!['index.html', 'style.css', 'chat.js', 'sage.js', 'desktop.js'].includes(name)) {
     res.writeHead(404);
     return res.end();
   }
@@ -150,7 +203,7 @@ const server = http.createServer(async (req, res) => {
   });
   try {
     const page = await browser.newPage({
-      viewport: { width: 340, height: 420 },
+      viewport: { width: 1100, height: 760 },
       reducedMotion: 'reduce',
     });
     const errors = [];
@@ -158,15 +211,17 @@ const server = http.createServer(async (req, res) => {
     await page.goto(`http://127.0.0.1:${server.address().port}/#test-token`);
     await page.waitForFunction(() => document.body.classList.contains('linked'));
     await page.waitForFunction(() => document.querySelectorAll('.msg').length === 80);
-    assert.equal(await page.locator('#hud-title').innerText(), 'Auralis COMPANION');
+    assert.equal(await page.locator('#hud-title').innerText(), 'Auralis\nDESKTOP');
+    assert.equal(await page.locator('#chat').isVisible(), true);
+    await page.waitForFunction(() => document.querySelectorAll('.saved-chat').length === 2);
+    assert.equal(await page.locator('#btn-pin, #btn-minimize, #btn-close, #resize-handle, .pywebview-drag-region').count(), 0);
     assert.equal(await page.locator('#character-name').innerText(), 'Nexis');
     const shots = process.env.WOS_SCREENSHOTS;
     if (shots) {
       fs.mkdirSync(shots, { recursive: true });
-      await page.screenshot({ path: path.join(shots, 'companion.png') });
+      await page.screenshot({ path: path.join(shots, 'desktop.png') });
     }
-    await page.locator('#btn-chat').click();
-    await page.setViewportSize({ width: 480, height: 720 });
+    await page.setViewportSize({ width: 960, height: 720 });
     await page.waitForFunction(() => document.querySelector('#model-select').options.length === 2);
     assert.equal(await page.locator('#model-select').inputValue(), 'chat-alpha');
     await page.locator('#model-select').selectOption('chat-beta');
@@ -280,41 +335,56 @@ const server = http.createServer(async (req, res) => {
         `composer fits ${width}x${height}`,
       );
     }
-    // A broken or hung native bridge must not freeze a healthy HTTP session.
-    await page.evaluate(() => {
-      window.nativePinMode = 'ok';
-      let onTop = true;
-      window.pywebview = { api: {
-        get_window_state: async () => ({ on_top: onTop, expanded: true }),
-        get_endpoint: () => new Promise(() => {}),
-        set_on_top: async (enabled) => {
-          if (window.nativePinMode === 'throw') throw new Error('Native pin failed');
-          if (window.nativePinMode === 'hang') return new Promise(() => {});
-          onTop = enabled;
-          return { on_top: onTop, expanded: true };
-        },
-      } };
-      window.dispatchEvent(new Event('pywebviewready'));
-    });
-    const pin = page.locator('#btn-pin');
-    await page.waitForFunction(() => !document.querySelector('#btn-pin').hidden);
-    await pin.click();
-    await page.waitForFunction(() => document.querySelector('#btn-pin').getAttribute('aria-pressed') === 'false');
-    await page.evaluate(() => { window.nativePinMode = 'throw'; });
-    await pin.click();
-    await page.waitForFunction(() => !document.querySelector('#btn-pin').disabled);
-    assert.equal(await pin.getAttribute('aria-pressed'), 'false');
-    assert.equal(await page.locator('#chat-send').isDisabled(), false);
-    await page.evaluate(() => { window.nativePinMode = 'hang'; });
-    await pin.click();
-    await page.waitForFunction(() => !document.querySelector('#btn-pin').disabled);
-    assert.equal(await page.locator('#chat-send').isDisabled(), false);
-    online = false;
-    await page.waitForFunction(() => document.querySelector('#chat-send').disabled);
-    online = true;
-    await page.waitForFunction(() => !document.querySelector('#chat-send').disabled);
+    await page.setViewportSize({ width: 1100, height: 760 });
+    // Saved-chat navigation preserves per-chat drafts and uses confirmed destructive actions.
+    await page.locator('#chat-input').fill('A draft in another chat');
+    await page.locator('#btn-new-chat').click();
+    await page.waitForFunction(() => document.querySelector('#chat-input').value === '' && !document.querySelector('#btn-new-chat').disabled);
+    assert.equal(await page.locator('#empty-chat').isVisible(), true);
+    await page.locator('#btn-chat-actions').click(); await page.locator('#btn-rename-chat').click();
+    await page.locator('#dialog-input').fill('A fresh perspective'); await page.locator('#dialog-confirm').click();
+    await page.waitForFunction(() => document.querySelector('#chat-title').textContent === 'A fresh perspective' && document.querySelector('#desktop-dialog').hidden);
+    await page.locator('#character-select').selectOption('luna');
+    await page.waitForFunction(() => document.querySelector('#character-name').textContent === 'Luna' && !document.querySelector('#btn-new-chat').disabled);
+    await page.locator('#chat-input').fill('A new chat draft');
+    await page.locator('.saved-chat').filter({ hasText: 'Another thought' }).click();
+    await page.waitForFunction(() => document.querySelector('#chat-input').value === 'A draft in another chat');
+    await page.locator('.saved-chat').filter({ hasText: 'A fresh perspective' }).click();
+    await page.waitForFunction(() => document.querySelector('#chat-input').value === 'A new chat draft');
+    await page.locator('#btn-chat-actions').click(); await page.locator('#btn-clear-chat').click();
+    await page.locator('#dialog-cancel').click();
+    assert.equal(await page.locator('#chat-input').inputValue(), 'A new chat draft');
+    await page.locator('#btn-chat-actions').click(); await page.locator('#btn-clear-chat').click();
+    await page.locator('#dialog-confirm').click();
+    await page.waitForFunction(() => document.querySelector('#desktop-dialog').hidden);
+    await page.locator('#btn-chat-actions').click(); await page.locator('#btn-delete-chat').click();
+    await page.locator('#dialog-confirm').click();
+    await page.waitForFunction(() => document.querySelector('#desktop-dialog').hidden && document.querySelectorAll('.saved-chat').length === 2);
+    // Masked key setup only configures a provider and refreshes model discovery.
+    const sentBeforeSetup = sent.length;
+    await page.locator('#btn-credentials').click();
+    await page.waitForFunction(() => document.querySelector('#credential-provider').options.length === 3);
+    assert.equal(await page.locator('#credential-key').getAttribute('type'), 'password');
+    await page.locator('#credential-provider').selectOption('openai');
+    await page.locator('#credential-key').fill('synthetic-test-key');
+    await page.locator('#btn-save-credential').click();
+    await page.waitForFunction(() => document.querySelector('#credential-status').textContent.includes('Key saved') && !document.querySelector('#btn-save-credential').disabled);
+    assert.equal(await page.locator('#credential-key').inputValue(), '');
+    assert.equal(sent.length, sentBeforeSetup);
+    assert.equal(await page.evaluate(() => document.body.innerText.includes('synthetic-test-key')), false);
+    await page.locator('#credential-key').fill('invalid-test-key');
+    await page.locator('#btn-save-credential').click();
+    await page.waitForFunction(() => !document.querySelector('#credential-error').hidden);
+    assert.equal(await page.locator('#credential-key').inputValue(), '');
+    await page.locator('#btn-credentials-done').click();
+    await page.locator('#btn-avatar').click(); assert.equal(await page.locator('#stage').isVisible(), true);
+    await page.locator('#btn-avatar').click(); assert.equal(await page.locator('#avatar-panel').isVisible(), false);
+    // The native shell owns all window controls. A hanging endpoint bridge leaves HTTP healthy.
+    await page.evaluate(() => { window.pywebview = { api: { get_endpoint: () => new Promise(() => {}), set_expanded: () => { throw new Error('Must not resize'); } } }; });
+    online = false; await page.waitForFunction(() => document.querySelector('#chat-send').disabled);
+    online = true; await page.waitForFunction(() => !document.querySelector('#chat-send').disabled);
     assert.deepEqual(errors, []);
-    console.log('Companion browser smoke: all checks passed');
+    console.log('Desktop browser smoke: all checks passed');
   } finally {
     await browser.close();
     server.close();

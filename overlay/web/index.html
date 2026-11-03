@@ -3,170 +3,67 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Auralis Companion</title>
+    <title>Auralis Desktop</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body data-theme="dark">
     <main class="frame">
-      <header class="titlebar">
-        <div class="brand pywebview-drag-region">
-          <span class="brand-mark">a</span><span id="hud-title">Auralis <small>COMPANION</small></span>
-        </div>
-        <div class="window-actions">
-          <button
-            id="btn-pin"
-            hidden
-            class="icon"
-            title="Unpin: allow other windows in front"
-            aria-label="Keep Auralis above other windows"
-            aria-pressed="true"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-              <path d="M8 3h8M9 3v6l-3 4v2h12v-2l-3-4V3M12 15v6" />
-            </svg>
-          </button>
-          <button
-            id="btn-settings"
-            class="icon"
-            title="Appearance"
-            aria-label="Appearance"
-            aria-expanded="false"
-          >
-            ⚙
-          </button>
-          <button id="btn-minimize" hidden class="icon" title="Minimize" aria-label="Minimize">
-            −
-          </button>
-          <button
-            id="btn-close"
-            class="icon close"
-            title="Close and stop speech"
-            aria-label="Close and stop speech"
-          >
-            ×
-          </button>
-        </div>
-      </header>
-      <section class="stage-wrap">
-        <canvas id="stage" aria-label="Animated Auralis Companion"></canvas>
-        <div class="identity">
-          <span class="eyebrow">YOUR COMPANION</span>
-          <h1 id="character-name">Nexis</h1>
-          <span id="chat-title" class="chat-title">Current chat</span>
-          <span id="hud-state">Standing by</span>
-        </div>
-      </section>
-      <section id="chat" class="chat" hidden>
-        <div class="providerbar">
-          <label for="provider-select">Provider</label>
-          <select id="provider-select" aria-label="Chat provider"><option value="cloud">Gemini</option></select>
-        </div>
-        <div class="modelbar">
-          <span id="provider-label">GEMINI</span
-          ><select id="model-select" aria-label="Chat model">
-            <option>Loading models…</option></select
-          ><button
-            id="btn-model-refresh"
-            class="icon"
-            title="Refresh models"
-            aria-label="Refresh models"
-          >
-            ↻
-          </button>
-        </div>
-        <div class="model-tools">
-          <button id="btn-manual-model" class="text-button">Enter a model name</button
-          ><span id="model-source"></span>
-        </div>
-        <form id="manual-model-form" class="manual-model" hidden>
-          <input
-            id="manual-model"
-            aria-label="Model name"
-            placeholder="Exact model name"
-            maxlength="200"
-          /><button type="submit">Use model</button>
-        </form>
-        <p id="model-warning" class="hint" hidden></p>
-        <button id="btn-older" class="text-button older" hidden>Load earlier messages</button>
-        <div
-          id="chat-log"
-          class="chat-log"
-          role="log"
-          aria-label="Conversation"
-          aria-live="polite"
-        ></div>
-        <form id="chat-form" class="chat-form" autocomplete="off">
-          <textarea
-            id="chat-input"
-            rows="2"
-            maxlength="4000"
-            placeholder="message nexis"
-            aria-label="Message"
-          ></textarea>
-          <button id="chat-send" type="submit" title="Send message" aria-label="Send message">
-            ↑
-          </button>
-          <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
-        </form>
-      </section>
-      <footer class="console">
-        <div class="readout">
-          <span class="status-dot"></span><span id="line-a">Connecting to Auralis</span
-          ><span class="local-label">Auralis</span>
-        </div>
-        <div id="line-c" class="caption">A little space to think.</div>
-        <div id="notice" class="notice" role="status" hidden></div>
-        <nav class="controls" aria-label="Companion controls">
-          <button id="btn-voice" type="button" aria-pressed="false">voice: off</button>
-          <button id="btn-stop" type="button" title="Stop current speech">■ Stop</button>
-          <button id="btn-chat" type="button" aria-expanded="false">chat</button>
-        </nav>
-      </footer>
-      <aside id="appearance" class="appearance" aria-label="Appearance settings" hidden>
-        <div class="settings-heading">
-          <div>
-            <span class="eyebrow">MAKE IT YOURS</span>
-            <h2>Appearance</h2>
-          </div>
-          <button id="btn-settings-done" class="icon" aria-label="Close appearance settings">
-            ×
-          </button>
-        </div>
-        <label
-          >Companion style<select id="pref-preset">
-            <option value="crystal">Crystal core</option>
-            <option value="orb">Orb</option>
-            <option value="rings">Orbit rings</option>
-            <option value="wave">Waveform</option>
-          </select></label
-        >
-        <label
-          >Theme<select id="pref-theme">
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select></label
-        >
-        <label class="color-label"
-          >Accent color<input id="pref-accent" type="color" value="#a78bfa"
-        /></label>
-        <label
-          >Avatar size<input id="pref-size" type="range" min="0.5" max="1.2" step="0.05" value="1"
-        /></label>
-        <label
-          >Glow<input id="pref-glow" type="range" min="0" max="1" step="0.05" value="0.7"
-        /></label>
-        <label
-          >Motion<input id="pref-motion" type="range" min="0" max="1" step="0.05" value="1"
-        /></label>
-        <p class="hint">
-          Your appearance is saved automatically. Reduced motion follows your system preference.
-        </p>
-        <button id="btn-reset-appearance" class="secondary">Reset appearance</button>
+      <aside id="sidebar" class="sidebar" aria-label="Saved chats">
+        <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true">a</span><span id="hud-title">Auralis <small>DESKTOP</small></span></div>
+        <button id="btn-new-chat" class="new-chat" type="button"><span aria-hidden="true">＋</span> New chat</button>
+        <div class="sidebar-heading"><span>YOUR CHATS</span><span id="chat-count"></span></div>
+        <div id="saved-chats" class="saved-chats" aria-label="Conversations"></div>
+        <div id="sidebar-message" class="hint" role="status"></div>
+        <div class="sidebar-bottom"><span class="privacy-mark" aria-hidden="true">◇</span><span>Your space to think.<small>Conversations saved on this device.</small></span></div>
       </aside>
-      <div id="resize-handle" class="resize-handle" title="Resize window" aria-hidden="true"></div>
+      <section class="workspace" aria-label="Chat workspace">
+        <header class="workspace-header">
+          <button id="btn-sidebar" class="icon" type="button" title="Toggle saved chats" aria-label="Toggle saved chats" aria-expanded="true" aria-controls="sidebar">☰</button>
+          <div class="heading-copy"><span class="eyebrow">CONVERSATION</span><h1 id="chat-title">New chat</h1></div>
+          <div class="header-actions">
+            <button id="btn-chat-actions" class="icon" type="button" aria-label="Chat actions" aria-expanded="false" aria-controls="chat-actions">⋯</button>
+            <button id="btn-avatar" class="subtle" type="button" aria-expanded="false" aria-controls="avatar-panel">Companion</button>
+            <button id="btn-settings" class="icon" type="button" title="Appearance" aria-label="Appearance" aria-expanded="false">⚙</button>
+          </div>
+          <div id="chat-actions" class="popover" hidden>
+            <button id="btn-rename-chat" type="button">Rename chat</button>
+            <button id="btn-clear-chat" type="button">Clear messages</button>
+            <button id="btn-delete-chat" class="danger" type="button">Delete chat</button>
+          </div>
+        </header>
+        <div class="connection-bar"><span class="status-dot" aria-hidden="true"></span><span id="line-a">Connecting to Auralis</span><span id="connection-status">Connecting</span></div>
+        <div class="chat-layout">
+          <section id="chat" class="chat" aria-label="Current conversation">
+            <div class="session-toolbar">
+              <label class="character-control" for="character-select">Companion<select id="character-select"><option value="">Loading…</option></select></label>
+              <div class="providerbar"><label for="provider-select">Provider</label><select id="provider-select" aria-label="Chat provider"><option value="cloud">Gemini</option></select></div>
+              <div class="modelbar"><span id="provider-label" class="sr-only">GEMINI</span><label class="sr-only" for="model-select">Model</label><select id="model-select" aria-label="Chat model"><option>Loading models…</option></select><button id="btn-model-refresh" class="icon" title="Refresh models" aria-label="Refresh models">↻</button></div>
+            </div>
+            <div class="model-tools"><button id="btn-manual-model" class="text-button" type="button">Enter model name</button><span id="model-source"></span><button id="btn-credentials" class="text-button" type="button">API keys</button></div>
+            <form id="manual-model-form" class="manual-model" hidden><input id="manual-model" aria-label="Model name" placeholder="Exact model name" maxlength="200" /><button type="submit">Use model</button></form>
+            <p id="model-warning" class="hint" hidden></p>
+            <button id="btn-older" class="text-button older" type="button" hidden>Load earlier messages</button>
+            <div id="chat-log" class="chat-log" role="log" aria-label="Conversation" aria-live="polite"></div>
+            <div id="empty-chat" class="empty-chat" hidden><span class="empty-symbol" aria-hidden="true">✳</span><h2>A little space to think.</h2><p>Start a conversation. See where it takes you.</p></div>
+            <div id="notice" class="notice" role="status" hidden></div>
+            <form id="chat-form" class="chat-form" autocomplete="off"><textarea id="chat-input" rows="2" maxlength="4000" placeholder="Message Nexis…" aria-label="Message"></textarea><button id="chat-send" type="submit" title="Send message" aria-label="Send message">↑</button><span class="composer-hint">Enter to send · Shift + Enter for a new line</span></form>
+            <footer class="chat-footer"><div class="controls" aria-label="Voice controls"><button id="btn-voice" type="button" aria-pressed="false">voice: off</button><button id="btn-stop" type="button" title="Stop current speech">■ Stop speech</button></div><span>Make room for a good conversation.</span></footer>
+          </section>
+          <aside id="avatar-panel" class="avatar-panel" aria-label="Companion preview" hidden><div class="stage-wrap"><canvas id="stage" aria-label="Animated Auralis Companion"></canvas><div class="identity"><span class="eyebrow">YOUR COMPANION</span><h2 id="character-name">Nexis</h2><span id="hud-state">Standing by</span></div></div><p id="line-c" class="caption">A little space to think.</p></aside>
+        </div>
+      </section>
+      <aside id="appearance" class="appearance" aria-label="Appearance settings" hidden><div class="settings-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h2>Appearance</h2></div><button id="btn-settings-done" class="icon" aria-label="Close appearance settings">×</button></div>
+        <label>Companion style<select id="pref-preset"><option value="crystal">Crystal core</option><option value="orb">Orb</option><option value="rings">Orbit rings</option><option value="wave">Waveform</option></select></label>
+        <label>Theme<select id="pref-theme"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+        <label class="color-label">Accent color<input id="pref-accent" type="color" value="#a78bfa" /></label>
+        <label>Avatar size<input id="pref-size" type="range" min="0.5" max="1.2" step="0.05" value="1" /></label>
+        <label>Glow<input id="pref-glow" type="range" min="0" max="1" step="0.05" value="0.7" /></label>
+        <label>Motion<input id="pref-motion" type="range" min="0" max="1" step="0.05" value="1" /></label>
+        <p class="hint">Your appearance is saved automatically. Reduced motion follows your system preference.</p><button id="btn-reset-appearance" class="secondary">Reset appearance</button>
+      </aside>
+      <section id="desktop-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="dialog-title" hidden><form id="dialog-form" class="dialog-card"><span class="eyebrow">YOUR CONVERSATION</span><h2 id="dialog-title">Rename chat</h2><p id="dialog-description" class="hint"></p><label id="dialog-field">Chat name<input id="dialog-input" maxlength="120" autocomplete="off" /></label><p id="dialog-error" class="notice" role="alert" hidden></p><div class="dialog-actions"><button id="dialog-cancel" type="button">Cancel</button><button id="dialog-confirm" type="submit" class="primary">Save</button></div></form></section>
+      <section id="credentials-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="credentials-title" hidden><div class="dialog-card"><div class="settings-heading"><div><span class="eyebrow">CONNECTIONS</span><h2 id="credentials-title">API keys</h2></div><button id="btn-credentials-done" class="icon" type="button" aria-label="Close API keys">×</button></div><p class="hint">Connect a provider to discover its models. Voice uses Fish Audio. Keys are kept in this device’s Auralis configuration and never returned to this page.</p><form id="credentials-form" autocomplete="off"><label for="credential-provider">Provider</label><select id="credential-provider"><option value="">Loading…</option></select><p id="credential-status" class="hint" role="status"></p><label for="credential-key">API key</label><input id="credential-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste an API key" required /><p id="credential-error" class="notice" role="alert" hidden></p><button id="btn-save-credential" class="primary" type="submit">Save key</button></form></div></section>
     </main>
-    <script src="sage.js"></script>
-    <script src="chat.js"></script>
+    <script src="sage.js"></script><script src="chat.js"></script><script src="desktop.js"></script>
   </body>
 </html>

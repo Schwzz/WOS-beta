@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -53,6 +54,7 @@ STATIC_FILES = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/sage.js": ("sage.js", "text/javascript; charset=utf-8"),
     "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
+    "/desktop.js": ("desktop.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -92,6 +94,7 @@ class OverlayBackend:
     """Shared access to the one Auralis session and speaker."""
 
     def __init__(self, get_session, speaker, notify=None):
+        self._closed = False
         self._get_session = get_session
         self._speaker = speaker
         self._notify = notify
@@ -116,6 +119,16 @@ class OverlayBackend:
         self._delivered = OrderedDict()
         self.preferences = Preferences()
         self.catalog = ModelCatalog()
+        from core.desktop_service import DesktopService
+        self.desktop = DesktopService(self)
+
+    def close(self):
+        self._closed = True
+        self.stop_speech()
+
+    def _ensure_open(self):
+        if self._closed:
+            raise BackendError("Auralis has shut down.", 409)
 
     # -- terminal side -----------------------------------------------------
 
@@ -172,6 +185,7 @@ class OverlayBackend:
             self._command_lock.acquire()
 
         try:
+            self._ensure_open()
             session = self._get_session()
             if from_ui and request_id in self._delivered:
                 previous_text, previous_reply = self._delivered[request_id]
@@ -318,6 +332,7 @@ class OverlayBackend:
         return {
             "state": state,
             "character": getattr(session, "character_name", ""),
+            "character_id": getattr(session, "character_id", ""),
             "voice": {
                 "enabled": bool(self._speaker.enabled),
                 "available": get_api_key() is not None,
@@ -353,6 +368,7 @@ class OverlayBackend:
 
         return {
             "character": getattr(session, "character_name", ""),
+            "character_id": getattr(session, "character_id", ""),
             "messages": history,
             "before": start,
             "has_more": start > 0,
@@ -398,6 +414,7 @@ class OverlayBackend:
         if not self._command_lock.acquire(timeout=BUSY_TIMEOUT_SECONDS):
             raise BackendBusy("Auralis is busy. Change providers when the reply is finished.")
         try:
+            self._ensure_open()
             session = self._get_session()
             if (expected_provider is not None and expected_provider != session.provider) or (
                 session_id is not None and session_id != getattr(session, 'session_id', None)
@@ -421,6 +438,7 @@ class OverlayBackend:
         if not self._command_lock.acquire(timeout=BUSY_TIMEOUT_SECONDS):
             raise BackendBusy("Auralis is busy. Try changing the model when the reply is finished.")
         try:
+            self._ensure_open()
             session = self._get_session()
             if provider is not None and provider != session.provider:
                 raise BackendError("The provider changed. Refresh the model list.", 409)
@@ -442,17 +460,20 @@ class OverlayBackend:
         if not isinstance(enabled, bool):
             raise BackendError("'enabled' must be true or false.")
 
-        with self._settings_lock:
-            try:
-                save_voice_setting(enabled)
-            except (OSError, ValueError):
-                raise BackendError(
-                    "Could not save the voice setting.", 500
-                ) from None
+        session = self._get_session()
+        with getattr(session, '_commit_lock', nullcontext()):
+            self._ensure_open()
+            with self._settings_lock:
+                try:
+                    save_voice_setting(enabled)
+                except (OSError, ValueError):
+                    raise BackendError(
+                        "Could not save the voice setting.", 500
+                    ) from None
 
-            self._speaker.set_enabled(enabled)
-            if not enabled:
-                self.stop_speech()
+                self._speaker.set_enabled(enabled)
+                if not enabled:
+                    self.stop_speech()
 
 
 class OverlayServer:
@@ -713,6 +734,12 @@ def _make_handler(server):
                     self._error(error.status, str(error))
             elif path == "/api/providers":
                 self._json(200, {"providers": provider_options()})
+            elif path == "/api/chats":
+                self._json(200, server.backend.desktop.get_chats())
+            elif path == "/api/characters":
+                self._json(200, server.backend.desktop.get_characters())
+            elif path == "/api/credentials":
+                self._json(200, server.backend.desktop.get_credentials())
             elif path == "/api/preferences":
                 self._json(200, server.backend.preferences.get())
             else:
@@ -728,7 +755,8 @@ def _make_handler(server):
             if not self._guard(api=True):
                 return
 
-            if path not in ("/api/message", "/api/voice", "/api/stop", "/api/model", "/api/provider", "/api/preferences"):
+            if path not in ("/api/message", "/api/voice", "/api/stop", "/api/model", "/api/provider", "/api/preferences",
+                            "/api/chats", "/api/character", "/api/credentials"):
                 self._error(404, "Not found.")
                 return
 
@@ -755,6 +783,12 @@ def _make_handler(server):
                 elif path == "/api/provider":
                     self._json(200, server.backend.set_provider(data.get("provider"), data.get("model"),
                         data.get("expected_provider"), data.get("session_id")))
+                elif path == "/api/chats":
+                    self._json(200, server.backend.desktop.mutate_chat(data))
+                elif path == "/api/character":
+                    self._json(200, server.backend.desktop.set_character(data))
+                elif path == "/api/credentials":
+                    self._json(200, server.backend.desktop.set_credential(data))
                 else:
                     try:
                         result = server.backend.preferences.update(data)

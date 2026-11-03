@@ -108,10 +108,13 @@ const backend = {
     character: 'Nexis',
     voice: { enabled: false, available: true },
     chat_version: 0,
+    session_id: 'session_one',
+    epoch: 'one',
     audio: null,
   },
   history: [],
   messageError: null,
+  historyError: false,
 };
 
 function respond(status, data) {
@@ -122,10 +125,17 @@ function fetchStub(url, opts = {}) {
   if (!backend.online) return Promise.reject(new Error('offline'));
   if (url.startsWith('/api/state')) {
     calls.lastStateUrl = url;
+    if (backend.deferState) {
+      backend.deferState = false;
+      const captured = JSON.parse(JSON.stringify(backend.state));
+      return new Promise((resolve) => { backend.releaseState = () => resolve({ ok: true, status: 200, json: async () => captured }); });
+    }
     return respond(200, backend.state);
   }
-  if (url === '/api/history')
-    return respond(200, { character: 'Nexis', messages: backend.history });
+  if (url === '/api/history') {
+    if (backend.historyError) { backend.historyError = false; return respond(503, { error: 'history failed' }); }
+    return respond(200, { character: backend.state.character, messages: backend.history, session_id: backend.state.session_id });
+  }
   const payload = opts.body ? JSON.parse(opts.body) : null;
   calls.posts.push([url, payload]);
   if (url === '/api/voice') {
@@ -198,7 +208,8 @@ function frame() {
   assert.strictEqual(els['chat-input'].placeholder, 'message nexis');
   assert.strictEqual(els['btn-voice'].textContent, 'voice: off');
 
-  // 2. idle never feeds levels
+  // 2. idle never feeds levels after the initial session reset.
+  calls.levels.length = 0;
   frame();
   assert.strictEqual(calls.levels.length, 0);
 
@@ -290,12 +301,33 @@ function frame() {
   await els['chat-form'].listeners.submit({ preventDefault() {} });
   assert.strictEqual(calls.posts.length, before);
 
-  // 11. expand / collapse
-  els['btn-chat'].listeners.click();
-  assert(body.classes.has('expanded') && els['chat'].hidden === false);
-  assert.strictEqual(els['btn-chat'].textContent, 'companion');
-  els['btn-chat'].listeners.click();
-  assert(!body.classes.has('expanded') && els['chat'].hidden === true);
+  // Desktop starts with chat visible and does not expose native resizing controls.
+  assert.strictEqual(els['chat'].hidden, false);
+  assert(window.AuralisClient);
+  assert(!('token' in window.AuralisClient));
+  window.AuralisClient.setBusy(true);
+  assert.strictEqual(els['chat-send'].disabled, true);
+  window.AuralisClient.setBusy(false);
+  assert.strictEqual(els['chat-send'].disabled, false);
+
+  // Drafts are restored after switching chats and remain separate after failures.
+  els['chat-input'].value = 'first draft';
+  window.AuralisClient.applyState({ ...backend.state, session_id: 'session_two' });
+  assert.strictEqual(els['chat-input'].value, '');
+  els['chat-input'].value = 'second draft';
+  window.AuralisClient.applyState(backend.state);
+  assert.strictEqual(els['chat-input'].value, 'first draft');
+  await flush();
+
+  // A transient history failure retries even though chat_version stays unchanged.
+  backend.historyError = true;
+  backend.history = [{ role: 'assistant', content: 'Recovered history' }];
+  backend.state.chat_version++;
+  await pollOnce();
+  assert(els.notice.textContent.includes('Retrying'));
+  now += 1100;
+  await pollOnce();
+  assert.strictEqual(els['chat-log'].children[0].children[1].textContent, 'Recovered history');
 
   // 12. backend goes away: idle + offline, no levels; comes back: recovers
   backend.state = {
@@ -319,33 +351,8 @@ function frame() {
   assert(!body.classes.has('offline'));
   assert.strictEqual(calls.status[calls.status.length - 1], 'standing by');
 
-  // Native failures stay separate from HTTP health, and a hanging bridge
-  // cannot prevent the next state poll or leave the pin permanently disabled.
-  const pin = els['btn-pin'];
-  window.pywebview = { api: {
-    get_window_state: async () => ({ expanded: false, on_top: true }),
-    set_on_top: async () => { throw new Error('native failure'); },
-    get_endpoint: () => new Promise(() => {}),
-  } };
-  await window.listeners.pywebviewready();
-  await flush();
-  assert.strictEqual(pin.getAttribute('aria-pressed'), 'true');
-  await pin.listeners.click();
-  assert.strictEqual(pin.disabled, false);
-  assert.strictEqual(pin.getAttribute('aria-pressed'), 'true');
-  assert(!body.classes.has('offline'));
-  assert(!els['chat-send'].disabled);
-  window.pywebview.api.set_on_top = async (on_top) => ({ on_top });
-  await pin.listeners.click();
-  assert.strictEqual(pin.getAttribute('aria-pressed'), 'false');
-  assert(pin.title.startsWith('Pin:'));
-  window.pywebview.api.set_on_top = () => new Promise(() => {});
-  const pendingPin = pin.listeners.click();
-  await flush();
-  assert(pin.disabled);
-  [...timers.values()].filter((t) => t.ms === 2000).forEach((t) => t.fn());
-  await pendingPin;
-  assert(!pin.disabled);
+  // A hanging endpoint bridge cannot freeze HTTP reconnects.
+  window.pywebview = { api: { get_endpoint: () => new Promise(() => {}) } };
   backend.online = false;
   await pollOnce();
   assert(body.classes.has('offline'));
@@ -362,6 +369,14 @@ function frame() {
   backend.state.state = 'thinking';
   await pollOnce();
   assert.strictEqual(Sage.state, 'thinking');
+  // An old poll response cannot undo a completed Desktop session switch.
+  backend.deferState = true;
+  await pollOnce();
+  window.AuralisClient.applyState({ ...backend.state, session_id: 'newer_session' });
+  await flush();
+  backend.releaseState();
+  await flush();
+  assert.strictEqual(window.AuralisClient.state().sessionId, 'newer_session');
   console.log('chat.js harness: all checks passed');
 })().catch((e) => {
   console.error(e);

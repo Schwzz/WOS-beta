@@ -2,7 +2,7 @@ requests
 python-dotenv
 google-genai
 httpx
-# Optional: the desktop window. Without it the overlay opens in your browser.
+# Desktop window. Required for Desktop; Terminal can run without it.
 pywebview>=5.0
 
 # Full-screen terminal UI. --plain retains the basic prompt.

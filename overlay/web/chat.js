@@ -9,10 +9,8 @@
     form = $('chat-form'),
     input = $('chat-input');
   const sendBtn = $('chat-send'),
-    voiceBtn = $('btn-voice'),
-    chatBtn = $('btn-chat');
-  const chatPanel = $('chat'),
-    caption = $('line-c');
+    voiceBtn = $('btn-voice');
+  const caption = $('line-c');
   const STATUS = {
     idle: 'standing by',
     thinking: 'analysing',
@@ -33,8 +31,15 @@
     everLinked = false,
     offlineSince = null,
     sending = false,
-    expanded = false;
-  let character = 'Nexis',
+    expanded = true;
+  let desktopBusy = false,
+    chatTitle = 'New chat',
+    historyNeeded = true,
+    historyInFlight = 0,
+    historyRetryAt = 0,
+    stateGeneration = 0;
+  const subscribers = new Set();
+  let characterId = null, character = 'Nexis',
     chatVersion = -1,
     sessionId = null,
     epoch = null,
@@ -58,9 +63,6 @@
     saveAgain = false,
     modelLoading = false,
     switchingModel = false;
-  let chatScrollTop = 0,
-    followChat = true,
-    openedChat = false;
   const drafts = new Map();
   const pyApi = () => window.pywebview && window.pywebview.api;
   function listen(id, event, fn) {
@@ -73,14 +75,21 @@
       el.hidden = !text;
     }
   }
+  function snapshot() {
+    return { linked, sending, switchingModel, busy: desktopBusy, sessionId, characterId, character, provider, model, chatTitle };
+  }
+  function publish() {
+    subscribers.forEach((fn) => { try { fn(snapshot()); } catch (_) {} });
+  }
   function controls() {
-    sendBtn.disabled = !linked || sending || switchingModel || chosenProvider() !== provider;
-    voiceBtn.disabled = !linked;
+    sendBtn.disabled = !linked || sending || switchingModel || desktopBusy || chosenProvider() !== provider;
+    voiceBtn.disabled = !linked || desktopBusy;
     if ($('btn-stop')) $('btn-stop').disabled = !linked;
-    if ($('model-select')) $('model-select').disabled = !linked || sending || modelLoading || switchingModel;
-    if ($('provider-select')) $('provider-select').disabled = !linked || sending || switchingModel;
-    if ($('manual-model')) $('manual-model').disabled = !linked || sending || switchingModel;
-    if ($('btn-model-refresh')) $('btn-model-refresh').disabled = !linked || modelLoading || switchingModel;
+    if ($('model-select')) $('model-select').disabled = !linked || sending || desktopBusy || modelLoading || switchingModel;
+    if ($('provider-select')) $('provider-select').disabled = !linked || sending || desktopBusy || switchingModel;
+    if ($('manual-model')) $('manual-model').disabled = !linked || sending || desktopBusy || switchingModel;
+    if ($('btn-model-refresh')) $('btn-model-refresh').disabled = !linked || desktopBusy || modelLoading || switchingModel;
+    publish();
   }
   // Native bridge calls can fail or never settle. They must not stop the
   // HTTP polling loop or label a healthy backend as disconnected.
@@ -98,16 +107,6 @@
       ]);
     } finally {
       clearTimeout(timer);
-    }
-  }
-  async function windowAction(method, args = []) {
-    try {
-      const state = await shellCall(method, args);
-      if (state && state.error) throw new Error(state.error);
-      return state;
-    } catch (_) {
-      notice('Could not change the window. Try again; connection checks will continue.');
-      return null;
     }
   }
   let endpointRefresh = null;
@@ -193,12 +192,15 @@
       row.append(copy);
     }
     log.appendChild(row);
+    if ($('empty-chat')) $('empty-chat').hidden = true;
     return row;
   }
   const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 70;
   async function loadHistory(before = null) {
+    if (before === null && historyInFlight) return;
     const serial = ++historySerial,
-      expected = sessionId;
+      expected = sessionId, expectedVersion = chatVersion;
+    historyInFlight = serial;
     try {
       const h = await api('/api/history' + (before === null ? '' : '?before=' + before));
       if (
@@ -208,6 +210,9 @@
       )
         return;
       if (h.character) character = h.character;
+      historyNeeded = expectedVersion !== chatVersion;
+      historyRetryAt = 0;
+      if ($('notice') && $('notice').textContent === 'Could not load the conversation. Retrying…') notice();
       const start = h.before || 0,
         total = start + h.messages.length;
       if (before === null && total < historyTotal) rows.clear();
@@ -225,6 +230,7 @@
         log.scrollTop =
           before !== null ? top + log.scrollHeight - height : follow ? log.scrollHeight : top;
       }
+      if ($('empty-chat')) $('empty-chat').hidden = messages.length !== 0;
       const earliest = rows.size ? Math.min(...rows.keys()) : 0;
       if ($('btn-older')) {
         $('btn-older').hidden = earliest === 0;
@@ -236,7 +242,13 @@
         .find((m) => m.role === 'assistant');
       caption.textContent = last ? last.content.replace(/\s+/g, ' ') : 'A little space to think.';
     } catch (_) {
-      /* State polling owns connection feedback. */
+      if (serial === historySerial && expected === sessionId) {
+        historyNeeded = true;
+        historyRetryAt = performance.now() + 1000;
+        notice('Could not load the conversation. Retrying…');
+      }
+    } finally {
+      if (historyInFlight === serial) historyInFlight = 0;
     }
   }
   listen('btn-older', 'click', () => loadHistory(+($('btn-older').dataset.before || 0)));
@@ -248,7 +260,7 @@
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || sending || switchingModel || !linked || chosenProvider() !== provider) return;
+    if (!text || sending || switchingModel || desktopBusy || !linked || chosenProvider() !== provider) return;
     const id =
       uncertain && uncertain.text === text && uncertain.session === sessionId
         ? uncertain.id
@@ -278,14 +290,18 @@
         failure +=
           ' Your reply may have been received; retrying this message will not send it twice.';
       } else uncertain = null;
-      if (!input.value && submittedSession === sessionId) input.value = text;
+      if (submittedSession === sessionId) {
+        if (!input.value) input.value = text;
+      } else if (!drafts.get(submittedSession)) drafts.set(submittedSession, text);
     }
     sending = false;
     controls();
-    rendered = '';
-    await loadHistory();
-    if (failure) addLine('error', failure);
-    input.focus();
+    if (submittedSession === sessionId) {
+      rendered = '';
+      await loadHistory();
+      if (failure) addLine('error', failure);
+      input.focus();
+    } else if (failure) notice('The message in the previous chat failed. Its draft is saved.');
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -305,18 +321,19 @@
     voiceBtn.setAttribute('aria-pressed', String(on));
     voiceBtn.title =
       on && !voice.available
-        ? 'Set FISH_AUDIO_API_KEY in .env and restart Auralis'
+        ? 'Add a Fish Audio key in API keys to enable voice'
         : 'Speak future replies aloud';
   }
   voiceBtn.addEventListener('click', async () => {
-    if (!linked) return;
+    if (!linked || desktopBusy) return;
+    const expected = sessionId;
     voiceBtn.disabled = true;
     try {
       const s = await api('/api/voice', {
         method: 'POST',
         body: JSON.stringify({ enabled: !voice.enabled }),
       });
-      onState(s, 0);
+      acceptState(s, expected);
       notice();
     } catch (err) {
       notice(err.message);
@@ -326,41 +343,30 @@
   });
   async function stopSpeech() {
     if (!linked) return;
+    const expected = sessionId;
     try {
-      onState(await api('/api/stop', { method: 'POST', body: '{}' }), 0);
+      acceptState(await api('/api/stop', { method: 'POST', body: '{}' }), expected);
       notice();
     } catch (err) {
       notice(err.message);
     }
   }
   listen('btn-stop', 'click', stopSpeech);
-  function setExpanded(value, resize = true) {
-    if (!value && expanded) {
-      chatScrollTop = log.scrollTop;
-      followChat = nearBottom();
-    }
-    expanded = value;
-    body.classList.toggle('expanded', value);
-    chatPanel.hidden = !value;
-    chatBtn.textContent = value ? 'companion' : 'chat';
-    chatBtn.setAttribute('aria-expanded', String(value));
-    const shell = pyApi();
-    if (resize && shell && shell.set_expanded)
-      windowAction('set_expanded', [value]);
-    if (value) {
-      loadModels();
-      input.focus();
-      log.scrollTop = !openedChat || followChat ? log.scrollHeight : chatScrollTop;
-      openedChat = true;
-    }
-  }
-  chatBtn.addEventListener('click', () => setExpanded(!expanded));
   function resetHistory() {
     historySerial++;
+    historyInFlight = 0;
+    historyNeeded = true;
+    historyRetryAt = 0;
     rows.clear();
     historyTotal = 0;
     rendered = '';
     log.textContent = '';
+    if ($('empty-chat')) $('empty-chat').hidden = true;
+  }
+  function acceptState(s, expected = sessionId) {
+    if (expected !== sessionId && s.session_id !== sessionId) return;
+    stateGeneration++;
+    onState(s, 0);
   }
   function onState(s, rtt) {
     const first = !linked;
@@ -392,7 +398,9 @@
     }
     if (s.epoch !== undefined) epoch = s.epoch;
     if (s.session_id !== undefined) sessionId = s.session_id;
-    if ($('chat-title') && s.chat_title) $('chat-title').textContent = s.chat_title;
+    if (s.chat_title) chatTitle = s.chat_title;
+    if ($('chat-title')) $('chat-title').textContent = chatTitle;
+    if (s.character_id) characterId = s.character_id;
     if (s.character) {
       if (character !== s.character) rendered = '';
       character = s.character;
@@ -428,8 +436,10 @@
     lastVoiceError = s.voice_error || null;
     if (s.chat_version !== chatVersion) {
       chatVersion = s.chat_version;
+      historyNeeded = true;
       if (!sending) loadHistory();
     }
+    if (historyNeeded && !sending && !historyInFlight && performance.now() >= historyRetryAt) loadHistory();
     if (first) {
       loadPreferences();
       loadProviders();
@@ -438,6 +448,8 @@
       if ($('provider-select')) $('provider-select').value = provider;
       if (expanded) loadModels();
     }
+    if ($('connection-status')) $('connection-status').textContent = sending ? 'Replying…' : 'Connected';
+    publish();
   }
   function onOffline() {
     if (offlineSince === null) offlineSince = performance.now();
@@ -451,21 +463,23 @@
     Sage.setState('idle');
     lastState = 'idle';
     Sage.setStatus(everLinked ? 'backend offline' : 'waiting for Auralis');
-    notice('Waiting for the Auralis terminal to reconnect.');
+    if ($('connection-status')) $('connection-status').textContent = 'Reconnecting…';
+    notice('Connection lost. Reconnecting to Auralis…');
+    publish();
     // Keep the window/draft open during slow restarts instead of destroying it.
   }
   async function poll() {
-    const start = performance.now();
+    const start = performance.now(), generation = stateGeneration;
     let s;
     try {
       s = await api('/api/state' + (haveAudio !== null ? '?have=' + haveAudio : ''));
     } catch (_) {
-      onOffline();
+      if (generation === stateGeneration) onOffline();
       // Recovery is independent of HTTP polling even if the native bridge hangs.
       refreshEndpoint();
     }
     try {
-      if (s) {
+      if (s && generation === stateGeneration) {
         if (!linked) notice();
         onState(s, performance.now() - start);
       }
@@ -554,8 +568,8 @@
     }
   }
   async function changeModel(value) {
-    if (!linked || !value || sending || switchingModel || modelLoading) return;
-    const selected = chosenProvider();
+    if (!linked || !value || sending || desktopBusy || switchingModel || modelLoading) return;
+    const selected = chosenProvider(), expected = sessionId;
     switchingModel = true;
     controls();
     try {
@@ -566,7 +580,7 @@
           expected_provider: provider, session_id: sessionId } :
           { model: value, provider, session_id: sessionId }),
       });
-      onState(s, 0);
+      acceptState(s, expected);
       notice();
     } catch (err) {
       notice(err.message);
@@ -647,51 +661,6 @@
     applyPreferences(defaults);
     savePreferences();
   });
-  listen('btn-close', 'click', async () => {
-    const shell = pyApi();
-    if (shell && shell.close) await windowAction('close');
-    else {
-      await stopSpeech();
-      window.close();
-    }
-  });
-  listen('btn-minimize', 'click', () => {
-    const shell = pyApi();
-    if (shell && shell.minimize) windowAction('minimize');
-  });
-  function renderPin(state) {
-    const pin = $('btn-pin');
-    if (!pin || !state || typeof state.on_top !== 'boolean') return;
-    pin.setAttribute('aria-pressed', String(state.on_top));
-    pin.title = state.on_top ? 'Unpin: allow other windows in front' : 'Pin: keep Auralis above other windows';
-    pin.setAttribute('aria-label', pin.title);
-  }
-  listen('btn-pin', 'click', async () => {
-    const pin = $('btn-pin');
-    if (pin.disabled) return;
-    pin.disabled = true;
-    try {
-      renderPin(await windowAction('set_on_top', [pin.getAttribute('aria-pressed') !== 'true']));
-    } finally {
-      pin.disabled = false;
-    }
-  });
-  async function shellReady() {
-    const shell = pyApi();
-    if (!shell) return;
-    body.classList.add('desktop');
-    if ($('btn-pin')) $('btn-pin').hidden = false;
-    if ($('btn-minimize')) $('btn-minimize').hidden = false;
-    if (shell.get_window_state) {
-      const state = await windowAction('get_window_state');
-      if (state) {
-        setExpanded(state.expanded, false);
-        renderPin(state);
-      }
-    }
-  }
-  window.addEventListener('pywebviewready', () => shellReady().catch(() => notice('Window controls are unavailable.')));
-  if (pyApi()) shellReady().catch(() => notice('Window controls are unavailable.'));
   window.addEventListener('pagehide', () => {
     if (!pyApi() && linked)
       fetch('/api/stop', {
@@ -703,50 +672,24 @@
   });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && e.target !== input) {
+      if (($('credentials-dialog') && !$('credentials-dialog').hidden) ||
+          ($('desktop-dialog') && !$('desktop-dialog').hidden)) return;
       if ($('appearance') && !$('appearance').hidden) settings(false);
       else stopSpeech();
     }
   });
-  const handle = $('resize-handle');
-  if (handle) {
-    let drag = null,
-      busy = false,
-      next = null;
-    async function resizeWindow() {
-      if (busy || !next) return;
-      const shell = pyApi();
-      if (!shell || !shell.resize) return;
-      const size = next;
-      next = null;
-      busy = true;
-      try {
-        await windowAction('resize', size);
-      } finally {
-        busy = false;
-        if (next) resizeWindow();
-      }
-    }
-    handle.addEventListener('pointerdown', (e) => {
-      if (!pyApi()) return;
-      e.preventDefault();
-      drag = { x: e.screenX, y: e.screenY, w: window.innerWidth, h: window.innerHeight };
-      handle.setPointerCapture(e.pointerId);
-    });
-    handle.addEventListener('pointermove', (e) => {
-      if (!drag) return;
-      next = [Math.round(drag.w + e.screenX - drag.x), Math.round(drag.h + e.screenY - drag.y)];
-      resizeWindow();
-    });
-    handle.addEventListener('pointercancel', () => {
-      drag = null;
-    });
-    handle.addEventListener('pointerup', () => {
-      drag = null;
-    });
-    handle.addEventListener('lostpointercapture', () => {
-      drag = null;
-    });
-  }
+  // A deliberately small shared client: the authentication token never leaves this closure.
+  window.AuralisClient = Object.freeze({
+    request: api,
+    state: snapshot,
+    applyState: acceptState,
+    notice,
+    subscribe(fn) { subscribers.add(fn); fn(snapshot()); return () => subscribers.delete(fn); },
+    setBusy(value) { desktopBusy = !!value; controls(); },
+    refreshProviders: loadProviders,
+    refreshModels: () => loadModels(true),
+    refreshHistory() { historyNeeded = true; return loadHistory(); },
+  });
   renderVoice();
   controls();
   Sage.setStatus('waiting for Auralis');

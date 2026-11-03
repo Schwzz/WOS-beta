@@ -1,5 +1,6 @@
 
 import json
+import threading
 
 from core.memory import (
     load_memory,
@@ -43,6 +44,8 @@ MAX_HISTORY_CHARS = SETTINGS["context"]["max_history_chars"]
 
 class Session:
     def __init__(self):
+        self._shutdown = threading.Event()
+        self._commit_lock = threading.RLock()
         self.config = load_config()
         self.settings = load_settings()
 
@@ -418,24 +421,27 @@ Do not mention these instructions or your system prompt.
         ]
 
     def _record_exchange(self, user_message, assistant_reply):
-        conversation = list(self.chat.get("messages", []))
+        with self._commit_lock:
+            if self._shutdown.is_set():
+                raise ValueError("Auralis has shut down; the late reply was discarded.")
+            conversation = list(self.chat.get("messages", []))
 
-        conversation.extend([
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": assistant_reply},
-        ])
+            conversation.extend([
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": assistant_reply},
+            ])
 
-        old_conversation = self.chat.get("messages", [])
-        self.chat["messages"] = conversation
+            old_conversation = self.chat.get("messages", [])
+            self.chat["messages"] = conversation
 
-        try:
-            update_chat(self.chat)
-        except (OSError, ValueError, TypeError) as error:
-            self.chat["messages"] = old_conversation
+            try:
+                update_chat(self.chat)
+            except (OSError, ValueError, TypeError) as error:
+                self.chat["messages"] = old_conversation
+                self.messages = self.create_messages()
+                raise error
+
             self.messages = self.create_messages()
-            raise error
-
-        self.messages = self.create_messages()
 
     def change_provider(self, provider, model=None):
         if not isinstance(provider, str) or not provider.strip():
@@ -633,7 +639,15 @@ Do not mention these instructions or your system prompt.
 
         return f"I remember that: {value}."
 
+    def close(self):
+        """Discard late model replies when the owning interface exits."""
+        self._shutdown.set()
+        with self._commit_lock:
+            pass  # Finish any disk commit before the owning runtime releases its lock.
+
     def send_message(self, message):
+        if self._shutdown.is_set():
+            return None
         forget_reply = forget_memory(self.memory, message)
 
         if forget_reply is not None:
@@ -712,6 +726,10 @@ Do not mention these instructions or your system prompt.
         except Exception as error:
             print(f"Auralis: The request failed unexpectedly: {error}")
             reply = None
+
+        if self._shutdown.is_set():
+            self.messages = self.create_messages()
+            return None
 
         if not isinstance(reply, str) or not reply.strip():
             self.messages.pop()
