@@ -254,7 +254,20 @@ class PreferenceTests(unittest.TestCase):
             saved = companion.Preferences(path).get()
             self.assertEqual(saved['accent'], '#123456')
             self.assertEqual(saved['theme'], 'light')
-            self.assertEqual(saved['preset'], 'wave')
+            self.assertEqual(saved['preset'], 'lattice')
+
+    def test_legacy_presets_migrate_without_losing_appearance(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'companion.json'
+            for old in ('crystal', 'orb', 'rings', 'wave'):
+                with self.subTest(preset=old):
+                    path.write_text(json.dumps({'preset': old, 'accent': '#123456',
+                        'size': .8, 'glow': .3, 'motion': .4, 'theme': 'light'}))
+                    store = companion.Preferences(path)
+                    self.assertEqual(store.get(), {'preset': 'lattice', 'accent': '#123456',
+                        'size': .8, 'glow': .3, 'motion': .4, 'theme': 'light'})
+                    store.update({'glow': .5})
+                    self.assertEqual(json.loads(path.read_text())['preset'], 'lattice')
 
     def test_invalid_values_never_overwrite_last_good_settings(self):
         with tempfile.TemporaryDirectory() as root:
@@ -264,7 +277,7 @@ class PreferenceTests(unittest.TestCase):
                         {'motion': 4}, {'unknown': 1}, {'theme': 'oops'}, []):
                 with self.subTest(bad=bad), self.assertRaises(ValueError):
                     store.update(bad)
-                self.assertEqual(store.get()['preset'], 'rings')
+                self.assertEqual(store.get()['preset'], 'lattice')
 
 
 class BackendRegressionTests(unittest.TestCase):
@@ -323,7 +336,7 @@ class CompanionApiTests(ServerCase):
     def test_preferences_are_validated_and_persisted(self):
         self.backend.preferences = companion.Preferences(Path(self.tmp.name) / 'prefs.json')
         self.assertEqual(self.request('POST', '/api/preferences', {'preset': 'wave'})[0], 200)
-        self.assertEqual(self.request('GET', '/api/preferences')[1]['preset'], 'wave')
+        self.assertEqual(self.request('GET', '/api/preferences')[1]['preset'], 'lattice')
         self.assertEqual(self.request('POST', '/api/preferences', {'glow': -5})[0], 400)
 
     def test_stop_does_not_change_voice_setting(self):

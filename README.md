@@ -19,7 +19,7 @@ The provider packages are needed whichever provider you use. Textual powers the 
 
 1. Install the packages above. Desktop and Terminal share the same project folder and data.
 2. Choose a provider in `config.json`, or use `/provider` after starting. `cloud` remains the Gemini ID. OpenAI, Claude, OpenRouter, DeepSeek, Grok, and Ollama are also supported. The default character is `nexis`.
-3. Desktop offers **API keys** for provider and Fish Audio setup; Terminal can use `.env` (see below).
+3. Desktop offers **API keys** for chat providers, Fish Audio output and Groq speech input; Terminal can use `.env` (see below).
 4. Start Auralis from this folder:
 
 ```
@@ -31,6 +31,10 @@ The provider packages are needed whichever provider you use. Textual powers the 
 In an interactive terminal Auralis opens the full-screen UI. The sidebar starts hidden; press **Ctrl+B** to show it and **F8** for activity details. Type `/` for command suggestions or press **Ctrl+P** for the command palette. Use `python start.py --plain` for the basic prompt. See [TERMINAL.md](TERMINAL.md) for shortcuts, previews, and the review report.
 
 Type `/help` to see all commands.
+
+### Dictation and Companion
+
+Press **F7** while Auralis is focused to start/stop dictation. Spoken text goes into the message box for review before sending. Configure a separate `GROQ_API_KEY` and choose F7/F9/F10 under **Speech input** in Desktop or `/stt` in Terminal. Desktop's optional **Companion** now shows Astral lattice, a hollow geometric avatar with a glowing core that reacts to voice and microphone audio. See [SPEECH.md](SPEECH.md) for setup, controls, previews and limits.
 
 ### Cloud providers
 
@@ -131,4 +135,4 @@ python -m unittest discover -s tests -t .
 
 ## Auralis Desktop
 
-Desktop is a regular resizable application with saved chats, character/provider/model selection, local API-key setup, voice controls, and an optional existing avatar panel. It starts and stops its own backend. See [DESKTOP.md](DESKTOP.md) for controls and validation. The old floating Companion window has been replaced.
+Desktop is a regular resizable application with saved chats, character/provider/model selection, local API-key setup, voice output, dictation, and an optional geometric Companion panel. It starts and stops its own backend. See [DESKTOP.md](DESKTOP.md) for controls and validation. The old floating Companion window has been replaced.

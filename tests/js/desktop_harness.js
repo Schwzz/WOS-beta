@@ -23,7 +23,7 @@ const els = Object.fromEntries(ids.map((id) => [id, element(id)])), body = eleme
 let state = { linked: true, sending: false, switchingModel: false, busy: false, sessionId: 'one', characterId: 'nexis', character: 'Nexis', provider: 'cloud', model: 'model-a', chatTitle: 'First chat' };
 let chats = [{ session_id: 'one', title: 'First chat', character_id: 'nexis' }, { session_id: 'two', title: 'Second chat', character_id: 'luna' }];
 const calls = [], notices = [], subscribers = [], credentials = {
-  providers: [{ id: 'cloud', label: 'Gemini', configured: true, key_env: 'GEMINI_API_KEY' }, { id: 'openai', label: 'OpenAI', configured: false, key_env: 'OPENAI_API_KEY' }, { id: 'ollama', label: 'Ollama', configured: true, key_env: null }], voice: { configured: false },
+  providers: [{ id: 'cloud', label: 'Gemini', configured: true, key_env: 'GEMINI_API_KEY' }, { id: 'openai', label: 'OpenAI', configured: false, key_env: 'OPENAI_API_KEY' }, { id: 'ollama', label: 'Ollama', configured: true, key_env: null }], voice: { configured: false }, speech: { configured: false },
 };
 let failAction = null, pendingAction = null, release = null, refreshes = 0;
 const publish = () => subscribers.forEach((fn) => fn({ ...state }));
@@ -41,7 +41,7 @@ const client = {
     if (url === '/api/credentials') {
       if (data) {
         if (failAction === 'credentials') throw new Error('provider echoed pretend-secret');
-        const target = data.provider === 'fish_audio' ? credentials.voice : credentials.providers.find((item) => item.id === data.provider);
+        const target = data.provider === 'fish_audio' ? credentials.voice : data.provider === 'groq' ? credentials.speech : credentials.providers.find((item) => item.id === data.provider);
         target.configured = true;
       }
       return credentials;
@@ -120,7 +120,27 @@ const submit = async (id) => { await els[id].listeners.submit({ preventDefault()
   assert.equal(els['credential-key'].value, '');
   assert(!els['credential-error'].textContent.includes('pretend-secret'));
   assert(!notices.join('').includes('pretend-secret')); failAction = null;
+  assert(els['credential-provider'].children.some((option) => option.value === 'groq' && option.textContent.includes('speech to text')));
+  els['credential-provider'].value = 'groq'; els['credential-key'].value = 'synthetic-speech-key';
+  await submit('credentials-form');
+  assert.equal(credentials.speech.configured, true);
+  assert.equal(refreshes, 2, 'speech setup does not refresh chat model catalogs');
+  assert.equal(els['credential-key'].value, '');
+  assert(els['credential-status'].textContent.includes('Speech input is ready'));
+  assert(calls.some((call) => call.url === '/api/credentials' && call.data?.provider === 'groq'));
+  assert.equal(calls.filter((call) => call.url === '/api/message').length, 0);
   await click('btn-credentials-done'); assert.equal(els['credentials-dialog'].hidden, true);
+  // Shared busy state covers speech capture/transcription and work begun in Terminal.
+  state.busy = true; state.speechBusy = true; publish();
+  assert.equal(els['btn-new-chat'].disabled, true);
+  assert.equal(els['character-select'].disabled, true);
+  assert.equal(els['saved-chats'].children[0].disabled, true);
+  const beforeBusy = calls.length;
+  await click('btn-new-chat');
+  await els['saved-chats'].children[1].listeners.click(); await flush();
+  assert.equal(calls.length, beforeBusy, 'disabled navigation cannot mutate a speech session');
+  state.busy = false; state.speechBusy = false; publish();
+
   // A delayed response cannot bring an old chat back after another control changed it.
   pendingAction = 'switch';
   els['saved-chats'].children[1].listeners.click(); await flush();

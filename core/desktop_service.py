@@ -29,6 +29,7 @@ class DesktopService:
             raise BackendBusy("Auralis is busy. Try again when the reply or command finishes.")
         try:
             backend._ensure_open()
+            backend.ensure_speech_idle()
             with backend._lock:
                 if backend._processing:
                     raise BackendBusy("Auralis is replying. Try again when the reply finishes.")

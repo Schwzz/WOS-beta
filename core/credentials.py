@@ -20,7 +20,8 @@ class CredentialError(ValueError):
 
 
 def credential_status():
-    return {"providers": provider_options(), "voice": {"configured": get_api_key() is not None}}
+    return {"providers": provider_options(), "voice": {"configured": get_api_key() is not None},
+            "speech": {"configured": bool(os.getenv("GROQ_API_KEY", "").strip()) and not os.getenv("GROQ_API_KEY", "").strip().lower().startswith("your_")}}
 
 
 def _comment_suffix(value):
@@ -48,7 +49,7 @@ def _comment_suffix(value):
 def save_credential(provider, key):
     if not isinstance(provider, str):
         raise CredentialError("Choose a supported credential provider.")
-    env_name = API_KEY_ENV if provider == "fish_audio" else PROVIDERS.get(provider, {}).get("key_env")
+    env_name = "GROQ_API_KEY" if provider == "groq" else API_KEY_ENV if provider == "fish_audio" else PROVIDERS.get(provider, {}).get("key_env")
     if not env_name:
         raise CredentialError("Choose a provider that uses an API key.")
     if (not isinstance(key, str) or not key.strip() or len(key) > MAX_KEY_CHARS

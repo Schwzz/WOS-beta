@@ -35,6 +35,75 @@ class CompletionTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_escape_cancels_dictation_with_sidebar_focus(self):
+        state = {'phase': 'idle', 'shortcut': 'f7', 'result': None}
+        speech = mock.Mock()
+        speech.state.side_effect = lambda: dict(state)
+        speech.start.side_effect = lambda *_: state.update(phase='recording') or dict(state)
+        speech.cancel.side_effect = lambda: state.update(phase='idle') or dict(state)
+        self.backend.speech = speech
+        async with self.app.run_test(size=(110, 36)) as pilot:
+            await self.ready()
+            self.app.action_sidebar()
+            self.app.chat_list.focus()
+            await pilot.press('f7')
+            self.assertEqual(state['phase'], 'recording')
+            await pilot.press('escape')
+            self.assertEqual(state['phase'], 'idle')
+
+    async def test_stop_command_cancels_dictation_instead_of_being_blocked(self):
+        state = {'phase': 'recording', 'shortcut': 'f7', 'result': None}
+        speech = mock.Mock()
+        speech.state.side_effect = lambda: dict(state)
+        speech.cancel.side_effect = lambda: state.update(phase='idle') or dict(state)
+        self.backend.speech = speech
+        async with self.app.run_test() as pilot:
+            await self.ready()
+            await self.type_text(pilot, '/stop')
+            await pilot.press('enter')
+            await self.wait_for(lambda: not self.app.busy)
+            self.assertEqual(state['phase'], 'idle')
+            self.assertEqual(self.app.composer.text, '')
+
+    async def test_speech_result_appends_to_draft_once_without_sending(self):
+        state = {'phase': 'idle', 'shortcut': 'f7', 'model': 'whisper-large-v3-turbo',
+                 'result': None, 'error': None, 'level': 0, 'elapsed': 0}
+        speech = mock.Mock()
+        speech.state.side_effect = lambda: dict(state)
+        self.backend.speech = speech
+        async with self.app.run_test() as pilot:
+            await self.ready()
+            await self.type_text(pilot, 'Existing draft')
+            state['result'] = {'id': 1, 'session_id': self.session.session_id, 'text': 'spoken words'}
+            with mock.patch('core.session.chat') as generate:
+                await self.app.refresh_session()
+                await self.app.refresh_session()
+                self.assertEqual(self.app.composer.text, 'Existing draft\nspoken words')
+                generate.assert_not_called()
+                speech.acknowledge.assert_called_once_with(1)
+
+    async def test_speech_shortcut_rebinds_and_escape_cancels(self):
+        state = {'phase': 'idle', 'shortcut': 'f9', 'model': 'whisper-large-v3-turbo',
+                 'result': None, 'error': None, 'level': 0, 'elapsed': 0}
+        speech = mock.Mock()
+        speech.state.side_effect = lambda: dict(state)
+        self.backend.speech = speech
+        async with self.app.run_test() as pilot:
+            await self.ready()
+            await pilot.press('f7')
+            speech.start.assert_not_called()
+            await pilot.press('f9')
+            speech.start.assert_called_once_with(self.session.session_id)
+            state['phase'] = 'recording'
+            await self.app.refresh_session()
+            await self.type_text(pilot, 'Keep this draft')
+            with mock.patch('core.session.chat') as generate:
+                await pilot.press('enter')
+                self.assertEqual(self.app.composer.text, 'Keep this draft')
+                generate.assert_not_called()
+            await pilot.press('escape')
+            speech.cancel.assert_called_once()
+
     def setUp(self):
         self.sandbox = self.enterContext(Sandbox())
         self.enterContext(mock.patch.dict(os.environ, {info['key_env']: '' for info in PROVIDERS.values() if info['key_env']} | {'FISH_AUDIO_API_KEY': ''}))

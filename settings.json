@@ -8,6 +8,11 @@
         "voice_id": "5a62b02a53954e13ad0d9a90464ef9b0",
         "model": "s2.1-pro-free"
     },
+    "stt": {
+        "provider": "groq",
+        "model": "whisper-large-v3-turbo",
+        "shortcut": "f7"
+    },
     "terminal": {
         "default_name_color": "cyan"
     },

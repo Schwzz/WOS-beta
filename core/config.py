@@ -247,6 +247,10 @@ DEFAULT_TTS_SETTINGS = {
     "model": "s2.1-pro-free"
 }
 
+DEFAULT_STT_SETTINGS = {
+    "provider": "groq", "model": "whisper-large-v3-turbo", "shortcut": "f7"
+}
+
 # Desktop overlay (WOS-Overlay). Passed through like "tts": a damaged value
 # must never stop Auralis, so core.overlay validates it and falls back.
 DEFAULT_OVERLAY_SETTINGS = {
@@ -258,6 +262,7 @@ def load_settings():
     settings = json.loads(json.dumps(DEFAULT_SETTINGS))
     settings["user_name"] = ""
     settings["tts"] = dict(DEFAULT_TTS_SETTINGS)
+    settings["stt"] = dict(DEFAULT_STT_SETTINGS)
     settings["overlay"] = dict(DEFAULT_OVERLAY_SETTINGS)
 
     try:
@@ -287,6 +292,7 @@ def load_settings():
 
     settings["user_name"] = saved_settings.get("user_name", "")
     settings["tts"] = saved_settings.get("tts", settings["tts"])
+    settings["stt"] = saved_settings.get("stt", settings["stt"])
     settings["overlay"] = saved_settings.get("overlay", settings["overlay"])
 
     color = settings["terminal"]["default_name_color"]

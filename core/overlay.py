@@ -119,16 +119,56 @@ class OverlayBackend:
         self._delivered = OrderedDict()
         self.preferences = Preferences()
         self.catalog = ModelCatalog()
+        from core.stt import SpeechController
+        self.speech = SpeechController(
+            lambda: getattr(self._get_session(), 'session_id', None),
+            before_record=self.stop_speech,
+        )
         from core.desktop_service import DesktopService
         self.desktop = DesktopService(self)
 
     def close(self):
         self._closed = True
+        self.speech.close()
         self.stop_speech()
 
     def _ensure_open(self):
         if self._closed:
             raise BackendError("Auralis has shut down.", 409)
+
+    def speech_action(self, data):
+        from core.stt import STTError
+        self._ensure_open()
+        action = data.get('action')
+        try:
+            if action == 'start':
+                if not self._command_lock.acquire(blocking=False):
+                    raise BackendBusy('Finish the current reply or command before recording.')
+                try:
+                    self._ensure_open()
+                    session_id = getattr(self._get_session(), 'session_id', None)
+                    if data.get('session_id') != session_id:
+                        raise BackendError('The active chat changed. Try recording again.', 409)
+                    return self.speech.start(session_id)
+                finally:
+                    self._command_lock.release()
+            if action == 'stop':
+                return self.speech.stop()
+            if action == 'cancel':
+                return self.speech.cancel()
+            if action == 'ack':
+                return self.speech.acknowledge(data.get('result_id'))
+            if action == 'configure':
+                with self._settings_lock:
+                    self.speech.configure(data.get('settings'))
+                return self.speech.state()
+            raise BackendError('Choose a supported speech-input action.')
+        except STTError as error:
+            raise BackendError(str(error)) from None
+
+    def ensure_speech_idle(self):
+        if self.speech.state()['phase'] in ('recording', 'transcribing'):
+            raise BackendBusy('Finish or cancel speech input before changing chats or sending.')
 
     # -- terminal side -----------------------------------------------------
 
@@ -186,6 +226,7 @@ class OverlayBackend:
 
         try:
             self._ensure_open()
+            self.ensure_speech_idle()
             session = self._get_session()
             if from_ui and request_id in self._delivered:
                 previous_text, previous_reply = self._delivered[request_id]
@@ -331,6 +372,8 @@ class OverlayBackend:
 
         return {
             "state": state,
+            "busy": bool(self._processing or self._terminal_holding),
+            "speech": self.speech.state(),
             "character": getattr(session, "character_name", ""),
             "character_id": getattr(session, "character_id", ""),
             "voice": {
@@ -415,6 +458,7 @@ class OverlayBackend:
             raise BackendBusy("Auralis is busy. Change providers when the reply is finished.")
         try:
             self._ensure_open()
+            self.ensure_speech_idle()
             session = self._get_session()
             if (expected_provider is not None and expected_provider != session.provider) or (
                 session_id is not None and session_id != getattr(session, 'session_id', None)
@@ -439,6 +483,7 @@ class OverlayBackend:
             raise BackendBusy("Auralis is busy. Try changing the model when the reply is finished.")
         try:
             self._ensure_open()
+            self.ensure_speech_idle()
             session = self._get_session()
             if provider is not None and provider != session.provider:
                 raise BackendError("The provider changed. Refresh the model list.", 409)
@@ -717,6 +762,8 @@ def _make_handler(server):
                     have = None
 
                 self._json(200, server.backend.get_state(have))
+            elif path == "/api/stt":
+                self._json(200, server.backend.speech.state())
             elif path == "/api/history":
                 before = parse_qs(parts.query).get("before", [None])[0]
                 try:
@@ -755,7 +802,7 @@ def _make_handler(server):
             if not self._guard(api=True):
                 return
 
-            if path not in ("/api/message", "/api/voice", "/api/stop", "/api/model", "/api/provider", "/api/preferences",
+            if path not in ("/api/stt", "/api/message", "/api/voice", "/api/stop", "/api/model", "/api/provider", "/api/preferences",
                             "/api/chats", "/api/character", "/api/credentials"):
                 self._error(404, "Not found.")
                 return
@@ -772,10 +819,13 @@ def _make_handler(server):
                         session_id=data.get("session_id"),
                     )
                     self._json(200, {"reply": reply})
+                elif path == "/api/stt":
+                    self._json(200, server.backend.speech_action(data))
                 elif path == "/api/voice":
                     server.backend.set_voice(data.get("enabled"))
                     self._json(200, server.backend.get_state())
                 elif path == "/api/stop":
+                    server.backend.speech.cancel()
                     server.backend.stop_speech()
                     self._json(200, server.backend.get_state())
                 elif path == "/api/model":

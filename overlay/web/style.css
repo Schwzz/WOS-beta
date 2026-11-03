@@ -6,8 +6,8 @@
   --text: #edf0e9;
   --muted: #95a6a1;
   --line: #c2ddd315;
-  --accent: #a78bfa;
-  --accent-rgb: 167, 139, 250;
+  --accent: #65dfcc;
+  --accent-rgb: 101, 223, 204;
   --teal: #84c5b6;
   --error: #f0a59d;
   --font: 'Segoe UI', system-ui, sans-serif;
@@ -141,3 +141,16 @@ input[type='color'] { padding: 2px; width: 44px; height: 28px; }
 @media (max-width: 540px) { .sidebar { position: absolute; z-index: 4; left: 0; top: 0; bottom: 0; box-shadow: 8px 0 35px #0005; } body.sidebar-collapsed .sidebar { margin-left: -240px; } .workspace-header { padding: 15px 12px; gap: 7px; } h1 { font-size: 17px; } .eyebrow { font-size: 7px; } .connection-bar { padding-left: 15px; padding-right: 15px; } .session-toolbar { padding-left: 15px; padding-right: 15px; } .character-control, .providerbar { flex-basis: calc(50% - 8px); } .modelbar { flex-basis: 100%; } .session-toolbar select { padding: 6px; } .model-tools { padding-left: 15px; padding-right: 15px; } .chat-form { margin-left: 12px; margin-right: 12px; padding: 10px 10px 27px 12px; } .chat-log { padding-left: 15px; padding-right: 15px; gap: 20px; } .chat-footer { padding-left: 12px; padding-right: 12px; } #notice { margin-left: 12px; margin-right: 12px; } #line-a { max-width: 65%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .empty-chat h2 { font-size: 21px; } .empty-chat p { font-size: 10px; } }
 @media (max-height: 550px) { .workspace-header { min-height: 60px; padding-top: 10px; padding-bottom: 10px; } .connection-bar { padding-bottom: 7px; } .session-toolbar { padding-top: 8px; } .chat-form { margin-top: 7px; padding-top: 7px; padding-bottom: 22px; } .chat-form textarea { height: 34px; } .chat-footer { padding-top: 5px; padding-bottom: 6px; } .composer-hint { bottom: 6px; } .empty-chat { top: 43%; } .empty-symbol { font-size: 24px; } .empty-chat h2 { font-size: 18px; margin-top: 8px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Native microphone capture leaves the composer editable throughout transcription. */
+.mic-button { flex: none; width: 32px; height: 35px; padding: 0; border-radius: 9px; color: var(--teal); font-size: 16px; }
+.mic-button .mic-symbol { vertical-align: middle; }
+.mic-button .mic-record, .mic-button.recording .mic-symbol { display: none; }
+.mic-button.recording .mic-record { display: inline; }
+.mic-button.recording { color: var(--error); border-color: var(--error); }
+.speech-feedback { flex: none; display: flex; align-items: center; gap: 8px; margin: 7px 32px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.speech-feedback #speech-status { flex: 1; }
+.speech-feedback .error { color: var(--error); }
+#speech-meter { flex: none; width: 45px; height: 8px; accent-color: var(--teal); }
+@media (max-width: 760px) { .speech-feedback { margin-left: 20px; margin-right: 20px; } }
+@media (max-width: 540px) { .chat-form { gap: 6px; } .speech-feedback { margin-left: 12px; margin-right: 12px; font-size: 9px; } .chat-footer > span { display: none; } }

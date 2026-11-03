@@ -19,8 +19,8 @@
     listening: 'listening',
   };
   const defaults = {
-    preset: 'crystal',
-    accent: '#a78bfa',
+    preset: 'lattice',
+    accent: '#65dfcc',
     size: 1,
     glow: 0.7,
     motion: 1,
@@ -64,6 +64,14 @@
     modelLoading = false,
     switchingModel = false;
   const drafts = new Map();
+  let backendBusy = false;
+  let speech = { phase: 'idle', level: 0, elapsed: 0, error: null, result: null,
+    shortcut: 'f7', model: 'whisper-large-v3-turbo', provider: 'groq', configured: false };
+  let speechPending = 0, speechQueue = Promise.resolve(), suppressSpeechResult = false;
+  const speechResults = new Set(), speechAcks = new Set();
+  const speechActive = () => speech.phase === 'recording' || speech.phase === 'transcribing';
+  const speechBusy = () => speechActive() || speechPending > 0;
+  const busy = () => desktopBusy || backendBusy || speechBusy();
   const pyApi = () => window.pywebview && window.pywebview.api;
   function listen(id, event, fn) {
     if ($(id)) $(id).addEventListener(event, fn);
@@ -76,19 +84,29 @@
     }
   }
   function snapshot() {
-    return { linked, sending, switchingModel, busy: desktopBusy, sessionId, characterId, character, provider, model, chatTitle };
+    return { linked, sending, switchingModel, busy: busy(), desktopBusy, backendBusy, speechBusy: speechBusy(),
+      speech: { ...speech }, sessionId, characterId, character, provider, model, chatTitle };
   }
   function publish() {
     subscribers.forEach((fn) => { try { fn(snapshot()); } catch (_) {} });
   }
   function controls() {
-    sendBtn.disabled = !linked || sending || switchingModel || desktopBusy || chosenProvider() !== provider;
-    voiceBtn.disabled = !linked || desktopBusy;
+    const blocked = busy();
+    sendBtn.disabled = !linked || sending || switchingModel || blocked || chosenProvider() !== provider;
+    voiceBtn.disabled = !linked || blocked;
     if ($('btn-stop')) $('btn-stop').disabled = !linked;
-    if ($('model-select')) $('model-select').disabled = !linked || sending || desktopBusy || modelLoading || switchingModel;
-    if ($('provider-select')) $('provider-select').disabled = !linked || sending || desktopBusy || switchingModel;
-    if ($('manual-model')) $('manual-model').disabled = !linked || sending || desktopBusy || switchingModel;
-    if ($('btn-model-refresh')) $('btn-model-refresh').disabled = !linked || desktopBusy || modelLoading || switchingModel;
+    if ($('model-select')) $('model-select').disabled = !linked || sending || blocked || modelLoading || switchingModel;
+    if ($('provider-select')) $('provider-select').disabled = !linked || sending || blocked || switchingModel;
+    if ($('manual-model')) $('manual-model').disabled = !linked || sending || blocked || switchingModel;
+    if ($('btn-manual-model')) $('btn-manual-model').disabled = !linked || sending || blocked || switchingModel;
+    if ($('btn-model-refresh')) $('btn-model-refresh').disabled = !linked || blocked || modelLoading || switchingModel;
+    if ($('btn-mic')) $('btn-mic').disabled = !linked || sending || switchingModel || desktopBusy || (backendBusy && speech.phase !== 'recording') ||
+      speechPending > 0 || speech.phase === 'transcribing';
+    if ($('btn-speech-cancel')) $('btn-speech-cancel').disabled = !linked;
+    if ($('speech-save')) $('speech-save').disabled = !linked || sending || switchingModel || blocked;
+    if ($('speech-model')) $('speech-model').disabled = blocked;
+    if ($('speech-shortcut')) $('speech-shortcut').disabled = blocked;
+    renderSpeech();
     publish();
   }
   // Native bridge calls can fail or never settle. They must not stop the
@@ -260,7 +278,7 @@
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || sending || switchingModel || desktopBusy || !linked || chosenProvider() !== provider) return;
+    if (!text || sending || switchingModel || busy() || !linked || chosenProvider() !== provider) return;
     const id =
       uncertain && uncertain.text === text && uncertain.session === sessionId
         ? uncertain.id
@@ -309,8 +327,8 @@
       form.requestSubmit();
     }
     if (e.key === 'Escape') {
-      input.blur();
-      stopSpeech();
+      if (speechBusy()) { e.preventDefault(); cancelSpeech(); }
+      else { input.blur(); stopSpeech(); }
     }
   });
   function renderVoice() {
@@ -325,7 +343,7 @@
         : 'Speak future replies aloud';
   }
   voiceBtn.addEventListener('click', async () => {
-    if (!linked || desktopBusy) return;
+    if (!linked || busy()) return;
     const expected = sessionId;
     voiceBtn.disabled = true;
     try {
@@ -341,17 +359,152 @@
       controls();
     }
   });
-  async function stopSpeech() {
-    if (!linked) return;
-    const expected = sessionId;
-    try {
-      acceptState(await api('/api/stop', { method: 'POST', body: '{}' }), expected);
-      notice();
-    } catch (err) {
-      notice(err.message);
+  function renderSpeech() {
+    const recording = speech.phase === 'recording', active = speechBusy();
+    const shortcut = (speech.shortcut || 'f7').toUpperCase();
+    if ($('btn-mic')) {
+      $('btn-mic').setAttribute('aria-pressed', String(recording));
+      $('btn-mic').setAttribute('aria-label', recording ? 'Finish recording' : 'Record a message');
+      $('btn-mic').title = (recording ? 'Finish recording' : 'Record a message') + ' · ' + shortcut;
+      $('btn-mic').classList.toggle('recording', recording);
+    }
+    if ($('speech-status')) {
+      $('speech-status').textContent = speech.phase === 'recording'
+        ? 'Recording · ' + Math.min(60, Math.floor(speech.elapsed || 0)) + 's · press ' + shortcut + ' again to finish'
+        : speech.phase === 'transcribing' ? 'Transcribing… You can keep editing your draft.'
+        : speechPending ? 'Updating microphone…'
+        : speech.error || '';
+      $('speech-status').classList.toggle('error', speech.phase === 'error');
+    }
+    if ($('speech-feedback')) $('speech-feedback').hidden = !active && !speech.error;
+    if ($('btn-speech-cancel')) $('btn-speech-cancel').hidden = !active;
+    if ($('speech-meter')) {
+      $('speech-meter').value = recording ? Math.max(0, Math.min(1, speech.level || 0)) : 0;
+      $('speech-meter').hidden = !recording;
+    }
+    if ($('speech-configured')) $('speech-configured').textContent = speech.configured
+      ? 'Groq key configured. Your recording is sent to Groq when you finish.'
+      : 'Add a Groq key in API keys before recording.';
+  }
+  function avatarState() {
+    if (speech.phase === 'recording' || speech.phase === 'transcribing') {
+      Sage.setState('listening');
+      Sage.setStatus(speech.phase === 'recording' ? 'listening' : 'transcribing');
+      Sage.setAudioLevel(speech.phase === 'recording' ? Math.max(0, Math.min(1, speech.level || 0)) : 0);
+    } else {
+      Sage.setState(lastState);
+      Sage.setStatus(STATUS[lastState] || lastState);
     }
   }
+  async function ackSpeech(result, key) {
+    if (speechAcks.has(key)) return;
+    speechAcks.add(key);
+    try {
+      // A repeated acknowledgement is harmless. Never apply its possibly stale state.
+      await api('/api/stt', { method: 'POST', body: JSON.stringify({ action: 'ack', result_id: result.id }) });
+    } catch (_) { /* The next poll retries without inserting the transcript again. */ }
+    finally { speechAcks.delete(key); }
+  }
+  function acceptSpeech(next) {
+    if (!next) return;
+    const previousPhase = speech.phase;
+    speech = { ...speech, ...next };
+    if (previousPhase === 'recording' && speech.phase !== 'recording') Sage.setAudioLevel(0);
+    const result = speech.result;
+    if (result && result.id !== undefined) {
+      const key = String(epoch) + ':' + result.id + ':' + result.session_id;
+      if (!speechResults.has(key)) {
+        // Mark before acknowledging, including discarded/canceled/cross-chat results.
+        speechResults.add(key);
+        if (!suppressSpeechResult && result.session_id === sessionId && typeof result.text === 'string' && result.text.trim()) {
+          input.value += (input.value && !/\s$/.test(input.value) ? '\n' : '') + result.text.trim();
+          drafts.set(sessionId, input.value);
+          notice('Transcript added. Review or edit it, then send when you are ready.');
+        }
+      }
+      ackSpeech(result, key);
+    }
+    renderSpeech();
+  }
+  function speechCommand(action, extra = {}) {
+    speechPending++;
+    stateGeneration++;
+    controls();
+    const operation = speechQueue.catch(() => {}).then(async () => {
+      try {
+        const result = await api('/api/stt', { method: 'POST', body: JSON.stringify({ action, ...extra }) });
+        stateGeneration++;
+        acceptSpeech(result);
+        avatarState();
+        return true;
+      } catch (err) {
+        if (action !== 'ack') {
+          speech = { ...speech, phase: 'error', level: 0, error: err.message };
+          notice(err.message);
+          avatarState();
+        }
+        return false;
+      } finally {
+        speechPending--;
+        stateGeneration++;
+        controls();
+      }
+    });
+    speechQueue = operation;
+    return operation;
+  }
+  function toggleSpeech() {
+    if (!linked || sending || switchingModel || desktopBusy || (backendBusy && speech.phase !== 'recording') || speechPending || speech.phase === 'transcribing') return;
+    if (speech.phase === 'recording') return speechCommand('stop');
+    suppressSpeechResult = false;
+    return speechCommand('start', { session_id: sessionId });
+  }
+  function cancelSpeech() {
+    if (!linked || !speechBusy()) return;
+    suppressSpeechResult = true;
+    return speechCommand('cancel');
+  }
+  listen('btn-mic', 'click', toggleSpeech);
+  listen('btn-speech-cancel', 'click', cancelSpeech);
+  async function stopSpeech() {
+    if (!linked) return;
+    suppressSpeechResult = true;
+    // Queue behind microphone actions so a delayed start cannot revive capture.
+    speechPending++;
+    stateGeneration++;
+    controls();
+    const expected = sessionId;
+    const operation = speechQueue.catch(() => {}).then(async () => {
+      try {
+        acceptState(await api('/api/stop', { method: 'POST', body: '{}' }), expected);
+        notice();
+      } catch (err) { notice(err.message); }
+      finally { speechPending--; stateGeneration++; controls(); }
+    });
+    speechQueue = operation;
+    return operation;
+  }
   listen('btn-stop', 'click', stopSpeech);
+  function speechSettings(open) {
+    if (!$('speech-dialog')) return;
+    $('speech-dialog').hidden = !open;
+    $('btn-speech-settings').setAttribute('aria-expanded', String(open));
+    if (open) {
+      $('speech-model').value = speech.model;
+      $('speech-shortcut').value = speech.shortcut;
+      $('speech-setting-error').hidden = true;
+      $('speech-shortcut').focus();
+    } else $('btn-speech-settings').focus();
+  }
+  listen('btn-speech-settings', 'click', () => speechSettings(true));
+  listen('speech-done', 'click', () => speechSettings(false));
+  listen('speech-form', 'submit', async (e) => {
+    e.preventDefault();
+    if (!linked || sending || switchingModel || busy()) return;
+    const ok = await speechCommand('configure', { settings: { model: $('speech-model').value, shortcut: $('speech-shortcut').value } });
+    if (ok) speechSettings(false);
+    else { $('speech-setting-error').textContent = 'Could not save speech input settings. Try again.'; $('speech-setting-error').hidden = false; }
+  });
   function resetHistory() {
     historySerial++;
     historyInFlight = 0;
@@ -413,13 +566,14 @@
       provider = s.provider;
     }
     voice = s.voice || voice;
+    backendBusy = !!s.busy;
+    if (s.speech && (!speechPending || suppressSpeechResult)) acceptSpeech(s.speech);
     renderVoice();
     controls();
     const state = s.phase || s.state;
     if (lastState === 'speaking' && state !== 'speaking') Sage.setAudioLevel(0);
-    Sage.setState(state);
-    Sage.setStatus(STATUS[state] || state);
     lastState = state;
+    avatarState();
     if (s.audio) {
       if (s.audio.levels) {
         env = { id: s.audio.id, fps: s.audio.fps || 50, levels: s.audio.levels, t0: 0 };
@@ -491,7 +645,7 @@
   }
   function drive(now) {
     requestAnimationFrame(drive);
-    if (env && lastState === 'speaking') {
+    if (env && lastState === 'speaking' && !speechActive()) {
       const i = Math.floor(((now - env.t0) / 1000) * env.fps);
       Sage.setAudioLevel(i >= 0 && i < env.levels.length ? env.levels[i] : 0);
     }
@@ -568,7 +722,7 @@
     }
   }
   async function changeModel(value) {
-    if (!linked || !value || sending || desktopBusy || switchingModel || modelLoading) return;
+    if (!linked || !value || sending || busy() || switchingModel || modelLoading) return;
     const selected = chosenProvider(), expected = sessionId;
     switchingModel = true;
     controls();
@@ -601,7 +755,7 @@
     changeModel($('manual-model').value.trim());
   });
   function applyPreferences(values) {
-    prefs = { ...prefs, ...values };
+    prefs = { ...prefs, ...values, preset: 'lattice' };
     body.dataset.theme = prefs.theme;
     document.documentElement.style.setProperty('--accent', prefs.accent);
     const c = prefs.accent.slice(1);
@@ -671,6 +825,15 @@
       }).catch(() => {});
   });
   window.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented) return;
+    if (e.key.toLowerCase() === (speech.shortcut || 'f7') && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      if (!document.hasFocus || document.hasFocus()) { e.preventDefault(); toggleSpeech(); }
+      return;
+    }
+    if (e.key === 'Escape' && speechBusy()) { e.preventDefault(); cancelSpeech(); return; }
+    if (e.key === 'Escape' && $('speech-dialog') && !$('speech-dialog').hidden) {
+      e.preventDefault(); speechSettings(false); return;
+    }
     if (e.key === 'Escape' && e.target !== input) {
       if (($('credentials-dialog') && !$('credentials-dialog').hidden) ||
           ($('desktop-dialog') && !$('desktop-dialog').hidden)) return;
@@ -685,7 +848,8 @@
     applyState: acceptState,
     notice,
     subscribe(fn) { subscribers.add(fn); fn(snapshot()); return () => subscribers.delete(fn); },
-    setBusy(value) { desktopBusy = !!value; controls(); },
+    setBusy(value) { desktopBusy = !!value; stateGeneration++; controls(); },
+    toggleSpeech, cancelSpeech,
     refreshProviders: loadProviders,
     refreshModels: () => loadModels(true),
     refreshHistory() { historyNeeded = true; return loadHistory(); },

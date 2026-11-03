@@ -7,3 +7,6 @@ pywebview>=5.0
 
 # Full-screen terminal UI. --plain retains the basic prompt.
 textual>=8.2.8,<9
+
+# Native microphone capture for optional speech-to-text (no local speech models).
+sounddevice>=0.5,<1

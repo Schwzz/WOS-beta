@@ -42,6 +42,7 @@ what you typed.
 | F3 | Choose a provider, then its model |
 | F4 | Choose a character |
 | F6 | Toggle saved voice output |
+| F7 (configurable to F9/F10) | Start/stop dictation; `/stt` opens speech input settings |
 | Escape | Dismiss suggestions, cancel a picker/prompt, or stop speech |
 | Ctrl+C | Cancel a picker/prompt and stop current/pending speech |
 | Ctrl+Q or `/exit` | Close Auralis and stop speech |
@@ -100,7 +101,7 @@ thread ownership, shutdown/restart, and failure handling.
   if Shift+Enter is indistinguishable from Enter. Native Windows terminal and
   real audio playback still benefit from a desktop smoke test.
 
-No STT, vision, or VTuber-model work is included.
+Dictation appends an editable transcript to the draft without sending it. Escape/Ctrl+C cancel recording or transcription as well as speech output. Set up the separate Groq key and change the shortcut through [SPEECH.md](SPEECH.md). The basic prompt uses `/stt start`, `/stt stop`, `/stt cancel` and `/stt result` instead of function keys. Vision and VTuber-model work remain deferred.
 
 ## Validation
 
@@ -108,14 +109,14 @@ No STT, vision, or VTuber-model work is included.
 python -m unittest discover -s tests -t .
 node tests/js/chat_harness.js
 node tests/js/avatar_harness.js
+node tests/js/desktop_harness.js
 ```
 
-The complete suite passes **613 tests**, including 26 terminal interaction tests.
-The new headless Textual tests exercise actual key events and the existing Auralis
+The headless Textual tests exercise actual key events and the existing Auralis
 command loop with temporary chats and fake provider responses. They cover
 completion, filtering, provider/model selection, destructive confirmations, draft
 switching, multiline messages, responsive layouts, earlier history, background
-updates, voice settings, unexpected command errors, and exit/restart during work.
+updates, voice settings, microphone shortcut remapping, draft insertion, cancellation, unexpected command errors, and exit/restart during work. See the PR for the final full-suite count.
 No real API key, paid request, or audio hardware is used by these tests. A local
 Linux PTY smoke check also exercised automatic TUI startup, slash suggestions,
 Ctrl+Q, and restoration of the terminal's alternate screen.

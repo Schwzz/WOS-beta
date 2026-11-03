@@ -10,15 +10,15 @@
     characterSerial = 0, credentialSerial = 0, lastSession = null, lastTitle = '',
     dialog = null, returnFocus = null;
   const listen = (id, event, fn) => $(id) && $(id).addEventListener(event, fn);
-  const unavailable = () => !state.linked || state.sending || state.switchingModel || busy;
+  const unavailable = () => !state.linked || state.sending || state.switchingModel || state.busy || busy;
   const setBusy = (value) => { busy = value; client.setBusy(value); renderControls(); };
   function renderControls() {
     ['btn-new-chat', 'btn-rename-chat', 'btn-clear-chat', 'btn-delete-chat',
       'character-select', 'dialog-confirm'].forEach((id) => { if ($(id)) $(id).disabled = unavailable(); });
     if ($('saved-chats')) Array.from($('saved-chats').children).forEach((el) => { el.disabled = unavailable(); });
-    if ($('btn-save-credential')) $('btn-save-credential').disabled = !state.linked || busy || !credentials;
-    if ($('credential-provider')) $('credential-provider').disabled = busy || !credentials;
-    if ($('credential-key')) $('credential-key').disabled = busy;
+    if ($('btn-save-credential')) $('btn-save-credential').disabled = !state.linked || state.busy || busy || !credentials;
+    if ($('credential-provider')) $('credential-provider').disabled = !!state.busy || busy || !credentials;
+    if ($('credential-key')) $('credential-key').disabled = !!state.busy || busy;
     if ($('chat-count')) $('chat-count').textContent = chats.length ? String(chats.length) : '';
   }
   function closeActions() {
@@ -175,7 +175,7 @@
   function renderCredentialStatus() {
     if (!credentials) return;
     const provider = $('credential-provider').value;
-    const item = provider === 'fish_audio' ? credentials.voice : credentials.providers.find((item) => item.id === provider);
+    const item = provider === 'fish_audio' ? credentials.voice : provider === 'groq' ? credentials.speech : (credentials.providers || []).find((item) => item.id === provider);
     $('credential-status').textContent = item && item.configured ? 'A key is configured. Save a new key to replace it.' : 'No key configured yet.';
   }
   function renderCredentials() {
@@ -191,6 +191,9 @@
     const voice = document.createElement('option');
     voice.value = 'fish_audio'; voice.textContent = 'Fish Audio · voice' + (credentials.voice && credentials.voice.configured ? ' · configured' : '');
     select.appendChild(voice);
+    const speech = document.createElement('option');
+    speech.value = 'groq'; speech.textContent = 'Groq · speech to text' + (credentials.speech && credentials.speech.configured ? ' · configured' : '');
+    select.appendChild(speech);
     const values = Array.from(select.children).map((option) => option.value);
     select.value = values.includes(previous) ? previous : values.includes(state.provider) ? state.provider : values[0];
     renderCredentialStatus(); renderControls();
@@ -222,7 +225,7 @@
   listen('credential-provider', 'change', () => { $('credential-key').value = ''; $('credential-error').hidden = true; renderCredentialStatus(); });
   listen('credentials-form', 'submit', async (event) => {
     event.preventDefault();
-    if (!state.linked || busy || !credentials) return;
+    if (!state.linked || state.busy || busy || !credentials) return;
     const key = $('credential-key').value.trim(), provider = $('credential-provider').value;
     if (!key || !provider) return;
     $('credential-key').value = '';
@@ -231,10 +234,13 @@
     try {
       credentials = await client.request('/api/credentials', { method: 'POST', body: JSON.stringify({ provider, key }) });
       renderCredentials();
-      $('credential-status').textContent = 'Key saved. Provider models will refresh automatically.';
+      $('credential-status').textContent = provider === 'groq' ? 'Key saved. Speech input is ready.' :
+        provider === 'fish_audio' ? 'Key saved. Spoken replies are ready.' : 'Key saved. Provider models will refresh automatically.';
       client.notice('API key saved. No message has been sent.');
-      await client.refreshProviders();
-      await client.refreshModels();
+      if (provider !== 'groq' && provider !== 'fish_audio') {
+        await client.refreshProviders();
+        await client.refreshModels();
+      }
     } catch (_) {
       // Never reflect a credential-bearing request or backend diagnostic into UI/logs.
       $('credential-error').textContent = 'Could not save this key. Check the key and connection, then try again.';
@@ -242,13 +248,15 @@
     } finally { setBusy(false); }
   });
   window.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented) return;
     if (event.key === 'Escape') {
       if (!$('credentials-dialog').hidden) { event.preventDefault(); closeCredentials(); }
       else if (!$('desktop-dialog').hidden) { event.preventDefault(); closeDialog(); }
       else closeActions();
     }
     if (event.key === 'Tab') {
-      const panel = !$('credentials-dialog').hidden ? $('credentials-dialog') : !$('desktop-dialog').hidden ? $('desktop-dialog') : null;
+      const panel = !$('credentials-dialog').hidden ? $('credentials-dialog') : !$('desktop-dialog').hidden ? $('desktop-dialog') :
+        $('speech-dialog') && !$('speech-dialog').hidden ? $('speech-dialog') : null;
       if (!panel || !panel.querySelectorAll) return;
       const focusable = Array.from(panel.querySelectorAll('button, input, select')).filter((el) => !el.disabled && !el.hidden && el.offsetParent !== null);
       if (!focusable.length) return;

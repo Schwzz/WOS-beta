@@ -91,7 +91,7 @@ from core.help_text import (
 from core.tts import FishAudioSpeaker
 from core.model_catalog import ModelCatalog
 from core.provider_registry import PROVIDERS, api_key
-from core.overlay import OverlayBackend, OverlayServer, overlay_port
+from core.overlay import OverlayBackend, OverlayServer, overlay_port, BackendError, BackendBusy
 
 
 # ------------------------------
@@ -1543,7 +1543,8 @@ def run_loop():
         try:
             message = input("You: ").strip()
         except KeyboardInterrupt:
-            if tts_speaker.active:
+            if tts_speaker.active or overlay_backend.speech.state()["phase"] in ("recording", "transcribing"):
+                overlay_backend.speech.cancel()
                 overlay_backend.stop_speech()
                 print("\nAuralis: Speech stopped.")
                 continue
@@ -1563,7 +1564,26 @@ def run_loop():
         if command.startswith(("/new", "/switch", "/chat switch", "/chat clear", "/clear", "/delete", "/chat delete", "/character switch", "/model", "/provider")):
             overlay_backend.stop_speech()
 
+        if command == "/stt" or command.startswith("/stt "):
+            action = command.partition(" ")[2]
+            try:
+                if action == "result":
+                    result = overlay_backend.speech.state().get('result')
+                    print(result['text'] if result else 'Auralis: No transcript is ready yet.')
+                    if result:
+                        overlay_backend.speech.acknowledge(result['id'])
+                elif action in ('start', 'stop', 'cancel'):
+                    overlay_backend.speech_action({'action': action, 'session_id': session.session_id})
+                    print('Auralis: Speech input ' + overlay_backend.speech.state()['phase'] + '. Use /stt result after transcription.')
+                else:
+                    speech = overlay_backend.speech.state()
+                    print(f"Auralis: Speech input uses {speech['model']}; {speech['shortcut'].upper()} toggles recording in the full terminal. Configure GROQ_API_KEY in .env or Desktop API keys.")
+            except (BackendError, BackendBusy) as error:
+                print(f'Auralis: {error}')
+            continue
+
         if command == "/stop":
+            overlay_backend.speech.cancel()
             overlay_backend.stop_speech()
             print("Auralis: Speech stopped.")
             continue
@@ -1571,6 +1591,10 @@ def run_loop():
         if command in ("/exit", "/quit"):
             print("Auralis: Conversation saved.")
             break
+
+        if overlay_backend.speech.state()["phase"] in ("recording", "transcribing"):
+            print("Auralis: Finish or cancel speech input before changing chats or sending. Use /stt stop or /stt cancel.")
+            continue
 
         if command == "/help":
             show_help()

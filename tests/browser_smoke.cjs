@@ -18,8 +18,9 @@ const state = {
   voice: { enabled: false, available: true },
   chat_version: 0,
   audio: null,
+  speech: { phase: 'idle', level: 0, elapsed: 0, error: null, result: null, configured: true, provider: 'groq', shortcut: 'f7', model: 'whisper-large-v3-turbo' },
 };
-let prefs = { preset: 'crystal', accent: '#a78bfa', size: 1, glow: 0.7, motion: 1, theme: 'dark' };
+let prefs = { preset: 'lattice', accent: '#65dfcc', size: 1, glow: 0.7, motion: 1, theme: 'dark' };
 let messages = Array.from({ length: 80 }, (_, i) => ({
   role: i % 2 ? 'assistant' : 'user',
   content: 'A saved message ' + i + '\nA little more detail for reading and scrolling.',
@@ -37,7 +38,9 @@ const credentialMetadata = { providers: [
   { id: 'cloud', label: 'Gemini', configured: true, key_env: 'GEMINI_API_KEY' },
   { id: 'openai', label: 'OpenAI', configured: false, key_env: 'OPENAI_API_KEY' },
   { id: 'ollama', label: 'Ollama', configured: true, key_env: null },
-], voice: { configured: false } };
+], voice: { configured: false }, speech: { configured: false } };
+const speechCalls = [];
+let failSpeechAck = false, failSpeechStart = false;
 const sent = [],
   dedup = new Map();
 const server = http.createServer(async (req, res) => {
@@ -57,6 +60,21 @@ const server = http.createServer(async (req, res) => {
       data = JSON.parse(text || '{}');
     }
     if (url.pathname === '/api/state') return json(200, state);
+    if (url.pathname === '/api/stt') {
+      speechCalls.push(data);
+      if (data.action === 'start') {
+        if (failSpeechStart) { failSpeechStart = false; return json(400, { error: 'No microphone is available. Check your device.' }); }
+        Object.assign(state.speech, { phase: 'recording', level: 0.48, elapsed: 1, result: null, error: null });
+      }
+      if (data.action === 'stop') Object.assign(state.speech, { phase: 'transcribing', level: 0 });
+      if (data.action === 'cancel') Object.assign(state.speech, { phase: 'idle', level: 0, result: null });
+      if (data.action === 'configure') Object.assign(state.speech, data.settings);
+      if (data.action === 'ack') {
+        if (failSpeechAck) { failSpeechAck = false; return json(503, { error: 'Synthetic ack retry' }); }
+        if (state.speech.result && state.speech.result.id === data.result_id) state.speech.result = null;
+      }
+      return json(200, state.speech);
+    }
     if (url.pathname === '/api/chats') {
       if (req.method === 'GET') return json(200, { chats: savedChats, session_id: state.session_id });
       if (data.expected_session_id !== state.session_id) return json(409, { error: 'The active chat changed.' });
@@ -92,7 +110,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/credentials') {
       if (req.method === 'POST') {
         if (data.key === 'invalid-test-key') return json(400, { error: 'Synthetic credential rejected' });
-        const item = data.provider === 'fish_audio' ? credentialMetadata.voice : credentialMetadata.providers.find((item) => item.id === data.provider);
+        const item = data.provider === 'fish_audio' ? credentialMetadata.voice : data.provider === 'groq' ? credentialMetadata.speech : credentialMetadata.providers.find((item) => item.id === data.provider);
         item.configured = true;
       }
       return json(200, credentialMetadata);
@@ -150,6 +168,7 @@ const server = http.createServer(async (req, res) => {
       stopCount++;
       state.state = state.phase = 'idle';
       state.audio = null;
+      Object.assign(state.speech, { phase: 'idle', level: 0, result: null });
       return json(200, state);
     }
     if (url.pathname === '/api/message') {
@@ -206,6 +225,13 @@ const server = http.createServer(async (req, res) => {
       viewport: { width: 1100, height: 760 },
       reducedMotion: 'reduce',
     });
+    await page.addInitScript(() => {
+      window.browserMicrophoneRequests = 0;
+      if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = () => {
+        window.browserMicrophoneRequests++;
+        throw new Error('Speech capture must use the native backend.');
+      };
+    });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/#test-token`);
@@ -241,6 +267,51 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#model-select').selectOption('chat-beta');
     await page.waitForFunction(() => document.querySelector('#provider-label').textContent === 'GEMINI' &&
       document.querySelector('#model-select').value === 'chat-beta');
+    // Speech input uses native capture; transcription is an editable, never auto-sent draft.
+    const sentBeforeSpeech = sent.length;
+    await page.locator('#chat-input').fill('Typed before');
+    await page.keyboard.press('F7');
+    await page.waitForFunction(() => window.AuralisClient.state().speech.phase === 'recording');
+    assert.equal(await page.locator('#btn-mic').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#chat-send').isDisabled(), true);
+    assert.equal(await page.locator('#btn-new-chat').isDisabled(), true);
+    assert.equal(await page.locator('#character-select').isDisabled(), true);
+    assert.equal(await page.locator('#chat-input').isEditable(), true);
+    await page.keyboard.press('F7');
+    await page.waitForFunction(() => document.querySelector('#speech-status').textContent.includes('Transcribing'));
+    await page.locator('#chat-input').fill('Typed before and during');
+    failSpeechAck = true;
+    Object.assign(state.speech, { phase: 'idle', result: { id: 1, session_id: state.session_id, text: 'Spoken thought' } });
+    await page.waitForFunction(() => document.querySelector('#chat-input').value === 'Typed before and during\nSpoken thought');
+    await page.waitForFunction(() => !window.AuralisClient.state().speech.result);
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Typed before and during\nSpoken thought');
+    assert.equal(speechCalls.filter((data) => data.action === 'ack' && data.result_id === 1).length, 2);
+    assert.equal(sent.length, sentBeforeSpeech);
+    await page.locator('#btn-mic').click();
+    await page.waitForFunction(() => window.AuralisClient.state().speech.phase === 'recording');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !window.AuralisClient.state().speechBusy);
+    Object.assign(state.speech, { result: { id: 2, session_id: state.session_id, text: 'Canceled result' } });
+    await page.waitForFunction(() => !window.AuralisClient.state().speech.result);
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Typed before and during\nSpoken thought');
+    failSpeechStart = true;
+    await page.locator('#btn-mic').click();
+    await page.waitForFunction(() => document.querySelector('#speech-status').textContent.includes('No microphone'));
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Typed before and during\nSpoken thought');
+    await page.locator('#btn-speech-settings').click();
+    if (shots) await page.screenshot({ path: path.join(shots, 'desktop-speech.png') });
+    await page.locator('#speech-shortcut').selectOption('f10');
+    await page.locator('#speech-model').selectOption('whisper-large-v3');
+    await page.locator('#speech-save').click();
+    await page.waitForFunction(() => document.querySelector('#speech-dialog').hidden);
+    assert.equal(state.speech.shortcut, 'f10');
+    assert.equal(state.speech.model, 'whisper-large-v3');
+    await page.keyboard.press('F10');
+    await page.waitForFunction(() => window.AuralisClient.state().speech.phase === 'recording');
+    await page.locator('#btn-stop').click();
+    await page.waitForFunction(() => !window.AuralisClient.state().speechBusy);
+    assert.equal(await page.evaluate(() => window.browserMicrophoneRequests), 0);
+    await page.locator('#chat-input').fill('');
     // Reading older text must survive background updates without jumping.
     await page.locator('#chat-log').evaluate((el) => {
       el.scrollTop = 100;
@@ -282,7 +353,7 @@ const server = http.createServer(async (req, res) => {
     // Appearance updates persist and zero motion remains a valid preference.
     await page.locator('#btn-settings').click();
     await page.locator('#pref-theme').selectOption('light');
-    await page.locator('#pref-preset').selectOption('rings');
+    await page.locator('#pref-preset').selectOption('lattice');
     await page.locator('#pref-motion').fill('0');
     await page.locator('#pref-motion').dispatchEvent('input');
     await page.waitForFunction(() => document.body.dataset.theme === 'light');
@@ -293,7 +364,7 @@ const server = http.createServer(async (req, res) => {
         (await response.json()).motion === 0,
     );
     assert.equal(prefs.motion, 0);
-    assert.equal(prefs.preset, 'rings');
+    assert.equal(prefs.preset, 'lattice');
     await page.locator('#btn-settings-done').click();
     // Offline controls cannot launch more requests, and a draft survives reconnect.
     await page.locator('#chat-input').fill('A draft to keep');
@@ -317,9 +388,14 @@ const server = http.createServer(async (req, res) => {
     ];
     await page.waitForFunction(() => document.querySelectorAll('.msg').length === 2);
     await page.locator('#btn-stop').click();
-    assert.equal(stopCount, 1);
+    assert.equal(stopCount, 2);
     if (shots) {
       await page.screenshot({ path: path.join(shots, 'chat.png') });
+      await page.locator('#btn-avatar').click();
+      await page.locator('#chat-input').fill('');
+      await page.screenshot({ path: path.join(shots, 'desktop-lattice.png') });
+      await page.locator('#btn-avatar').click();
+      await page.locator('#chat-input').fill('A draft to keep');
     }
     // Responsive layouts remain usable at the minimum native size.
     for (const [width, height] of [
@@ -363,7 +439,7 @@ const server = http.createServer(async (req, res) => {
     // Masked key setup only configures a provider and refreshes model discovery.
     const sentBeforeSetup = sent.length;
     await page.locator('#btn-credentials').click();
-    await page.waitForFunction(() => document.querySelector('#credential-provider').options.length === 3);
+    await page.waitForFunction(() => document.querySelector('#credential-provider').options.length === 4);
     assert.equal(await page.locator('#credential-key').getAttribute('type'), 'password');
     await page.locator('#credential-provider').selectOption('openai');
     await page.locator('#credential-key').fill('synthetic-test-key');
@@ -376,6 +452,13 @@ const server = http.createServer(async (req, res) => {
     await page.locator('#btn-save-credential').click();
     await page.waitForFunction(() => !document.querySelector('#credential-error').hidden);
     assert.equal(await page.locator('#credential-key').inputValue(), '');
+    await page.locator('#credential-provider').selectOption('groq');
+    await page.locator('#credential-key').fill('synthetic-speech-key');
+    await page.locator('#btn-save-credential').click();
+    await page.waitForFunction(() => document.querySelector('#credential-status').textContent.includes('Speech input is ready'));
+    assert.equal(credentialMetadata.speech.configured, true);
+    assert.equal(await page.locator('#credential-key').inputValue(), '');
+    assert.equal(sent.length, sentBeforeSetup);
     await page.locator('#btn-credentials-done').click();
     await page.locator('#btn-avatar').click(); assert.equal(await page.locator('#stage').isVisible(), true);
     await page.locator('#btn-avatar').click(); assert.equal(await page.locator('#avatar-panel').isVisible(), false);

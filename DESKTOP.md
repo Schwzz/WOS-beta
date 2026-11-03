@@ -27,7 +27,8 @@ Desktop and Terminal read the same chats, memory, characters, settings and `.env
 - The chat actions menu offers Rename, Clear messages, and Delete. Clear/Delete require an explicit confirmation with Cancel initially focused. The chat limit remains enforced; delete a chat to make room.
 - Choose a character, provider and discovered model in the toolbar. Failed/stale actions leave the current selection and drafts intact. Session-changing actions wait until a reply finishes.
 - Enter sends; Shift+Enter adds a line. Stop cancels current/pending speech; it does not abort a provider's HTTP request.
-- Voice enables/disables saved voice output. Fish Audio requires its own API key. The Companion button reveals the existing avatar; Appearance controls its existing presets, color, theme and motion.
+- Voice enables/disables saved voice output. Fish Audio requires its own API key. The Companion button reveals the Astral lattice avatar; Appearance controls color, size, glow, theme and motion. Its geometry and core react to spoken-output audio and microphone levels.
+- The microphone button or **F7** starts/stops dictation. A transcript is appended to your editable draft, never sent automatically. **Speech input** configures its model and shortcut; see [SPEECH.md](SPEECH.md) for setup and cancellation.
 - Closing the native window stops voice and the local server. A late provider reply is discarded after shutdown. Minimize keeps the app running. Window geometry is saved in `data/desktop_window.json`.
 
 ## Providers and keys
@@ -43,6 +44,7 @@ Open **API keys**, select a provider, paste its key into the masked field, and S
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | Fish Audio voice | `FISH_AUDIO_API_KEY` |
+| Groq speech input | `GROQ_API_KEY` |
 | Ollama | No key; requires a running local Ollama service |
 
 Saving a key refreshes provider/model discovery without a restart. Choose the desired provider and model explicitly. Listing a model does not guarantee quota, access, or compatibility; a cached/manual fallback remains available if discovery fails. No paid chat request is sent just to save a key.
@@ -56,8 +58,8 @@ Synthetic backend data; these show the page content inside the native window, wi
 
 ## Verification
 
-The complete Python suite passes **613 tests**; all three JS harnesses and the headless Chromium Desktop smoke pass. The suite covers shared runtime ownership/lifecycle, late replies on shutdown, authenticated management routes, busy/stale state, destructive confirmations, failed actions, credential redaction/atomic writes, simulated native window behavior, frontend controls and existing terminal regressions. See the PR for final test counts and CI results.
+The complete Python suite and all three JS harnesses cover shared runtime ownership/lifecycle, late replies on shutdown, authenticated management routes, busy/stale state, destructive confirmations, failed actions, credential redaction/atomic writes, simulated native window behavior, speech input, frontend controls and existing terminal regressions. The headless Chromium Desktop smoke exercises actual page interactions. See the PR for final test counts and CI results.
 
 The native host is tested through fakes on CI; real Windows title-bar, DPI, WebView2 and audio behavior still need a laptop smoke test. The earlier save/index transaction and corrupt-index recovery findings remain follow-ups; see `docs/reviews/2026-10-27-auralis.md`.
 
-STT, vision, tools, avatar redesign, remembered launch selection, and 3D VTuber models are not included.
+Vision, tools, remembered launch selection, and 3D VTuber models are not included.

@@ -235,12 +235,14 @@ class WosTerminal(App):
         Binding('f4', 'characters', 'Characters', show=False, priority=True),
         Binding('f6', 'voice', 'Voice', show=False, priority=True),
         Binding('ctrl+b', 'sidebar', 'Sidebar', priority=True),
+        Binding('f7', 'speech', 'Mic', priority=True, id='speech-input'),
         Binding('ctrl+t', 'theme', 'Theme', show=False, priority=True),
         Binding('ctrl+l', 'dismiss_output', 'Dismiss notice', show=False, priority=True),
         Binding('f8', 'details', 'Details', show=False, priority=True),
         Binding('pageup', 'history_up', 'Scroll up', show=False, priority=True),
         Binding('pagedown', 'history_down', 'Scroll down', show=False, priority=True),
         Binding('ctrl+c', 'interrupt', 'Stop', show=False, priority=True),
+        Binding('escape', 'interrupt', 'Stop', show=False),
         Binding('ctrl+q', 'quit', 'Quit', priority=True),
     ]
 
@@ -271,6 +273,8 @@ class WosTerminal(App):
         self.output_lines = deque(maxlen=500)
         self._notice_timer = None
         self._voice_toggle_busy = False
+        self._speech_key = None
+        self._speech_result_id = None
         self.register_theme(Theme(name='auralis-dark', primary='#8bd5c7', secondary='#dfbb81',
             background='#111b20', surface='#19282d', panel='#24373c', foreground='#e1ece9'))
         self.register_theme(Theme(name='auralis-light', primary='#286e64', secondary='#89632b',
@@ -354,11 +358,36 @@ class WosTerminal(App):
                 self.pending = None
             provider = self.namespace['PROVIDERS'].get(state['provider'], {}).get('label', state['provider'])
             voice = state['voice']
+            speech = state.get('speech', {})
+            key = speech.get('shortcut', 'f7')
+            if key != self._speech_key:
+                self.update_keymap({'speech-input': key})
+                self._speech_key = key
+            result = speech.get('result')
+            if result and result.get('id') != self._speech_result_id:
+                if result.get('session_id') == self.session_id and result.get('text'):
+                    draft = self.composer.text
+                    separator = '\n' if draft and not draft.endswith('\n') else ''
+                    self.composer.load_text(draft + separator + result['text'])
+                    self.composer.move_cursor(self.composer.document.end)
+                    self.write_output('Transcript added. Review it, then press Enter to send.')
+                else:
+                    self.write_output('The recording belonged to another chat and was discarded.')
+                self._speech_result_id = result['id']
+                self.backend.speech.acknowledge(result['id'])
+            speech_error = speech.get('error')
+            if speech_error and speech_error != getattr(self, '_speech_error', None):
+                self.write_output(speech_error)
+            self._speech_error = speech_error
             voice_text = 'off' if not voice['enabled'] else 'on' if voice['available'] else 'on · no key'
             phase = {'idle': 'Ready', 'thinking': 'Thinking…', 'preparing': 'Preparing voice…',
                      'speaking': 'Speaking…'}.get(state['phase'], state['phase'])
             if self.busy and state['phase'] == 'idle':
                 phase = 'Working…'
+            if speech.get('phase') == 'recording':
+                phase = f"Recording {speech.get('elapsed', 0):.0f}s · {key.upper()} transcribe · Esc cancel"
+            elif speech.get('phase') == 'transcribing':
+                phase = 'Transcribing… · Esc cancel'
             self.status_label.update(f"{state['character']}  ·  {phase}  ·  Voice {voice_text}")
             self.query_one('#heading-subtitle', Static).update(state['chat_title'])
             self.details.update(f"{state['chat_title']}\n\n{state['character']}\n{provider}\n{state['model']}")
@@ -594,6 +623,15 @@ class WosTerminal(App):
         text = text.strip()
         if not text:
             return False
+        if text == '/stt':
+            if from_composer:
+                self.composer.load_text('')
+            self.action_speech_settings()
+            return True
+        if (self.backend.speech.state()['phase'] in ('recording', 'transcribing')
+                and text.lower() not in ('/stop', '/stt stop', '/stt cancel', '/exit', '/quit')):
+            self.notify('Finish or cancel speech input before sending.', severity='warning')
+            return False
         session = self.namespace['session']
         before = len(session.chat.get('messages', []))
         if len(self.screen_stack) > 1 or self.busy or not self.bridge.submit(text):
@@ -626,6 +664,7 @@ class WosTerminal(App):
     def action_interrupt(self):
         if len(self.screen_stack) > 1:
             self.screen.action_cancel()
+        self.backend.speech.cancel()
         self.backend.stop_speech()
         self.notify('Speech stopped. Future replies can still use voice.')
 
@@ -641,6 +680,44 @@ class WosTerminal(App):
             finally:
                 self.post_message(VoiceChanged())
         self.run_worker(toggle, thread=True, group='voice', exclusive=False)
+
+    def action_speech(self):
+        if len(self.screen_stack) > 1:
+            return
+        phase = self.backend.speech.state()['phase']
+        if phase == 'transcribing':
+            self.notify('Transcribing… Press Esc to cancel.')
+            return
+        if self.busy:
+            self.notify('Finish the current reply or command before recording.', severity='warning')
+            return
+        try:
+            self.backend.speech_action({'action': 'stop' if phase == 'recording' else 'start',
+                                       'session_id': self.session_id})
+        except Exception as error:
+            # BackendError messages are sanitized; never display arbitrary device exceptions.
+            from core.overlay import BackendError, BackendBusy
+            self.write_output(str(error) if isinstance(error, (BackendError, BackendBusy)) else 'Speech input could not start. Check the microphone and Groq key.')
+
+    def action_speech_settings(self):
+        if len(self.screen_stack) > 1 or self.busy:
+            return
+        models = ['whisper-large-v3-turbo', 'whisper-large-v3']
+        def chosen_model(index):
+            if index is None:
+                return
+            def chosen_key(key_index):
+                if key_index is None:
+                    return
+                try:
+                    self.backend.speech_action({'action': 'configure',
+                        'settings': {'model': models[index], 'shortcut': ['f7', 'f9', 'f10'][key_index]}})
+                    self.write_output('Speech input settings saved. Configure GROQ_API_KEY in .env or Desktop API keys.')
+                except Exception:
+                    self.write_output('Could not save speech input settings. Finish recording or check file access.')
+                self.composer.focus()
+            self.push_screen(ChoiceScreen('Speech shortcut · start/stop recording', ['F7', 'F9', 'F10']), chosen_key)
+        self.push_screen(ChoiceScreen('Speech input · Groq Whisper model', models), chosen_model)
 
     def on_voice_changed(self):
         self._voice_toggle_busy = False
@@ -671,11 +748,13 @@ class WosTerminal(App):
 
     def action_quit(self):
         self._terminal_closing = True
+        self.backend.speech.cancel()
         self.bridge.close()
         self.exit()
 
     def on_unmount(self):
         self._terminal_closing = True
+        self.backend.speech.cancel()
         self.end_capture_print(self)
         self.bridge.close()
 

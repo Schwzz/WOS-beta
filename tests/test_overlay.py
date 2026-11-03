@@ -1198,7 +1198,7 @@ class ProjectFilesTests(unittest.TestCase):
         names = {l.split(">")[0].split("=")[0] for l in lines}
         self.assertEqual(
             names,
-            {"requests", "python-dotenv", "google-genai", "httpx", "pywebview", "textual"},
+            {"requests", "python-dotenv", "google-genai", "httpx", "pywebview", "textual", "sounddevice"},
         )
 
     def test_ui_files_exist_and_have_no_credentials(self):

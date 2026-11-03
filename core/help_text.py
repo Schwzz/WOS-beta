@@ -40,6 +40,13 @@ def _alias(canonical, usage, example):
 
 
 HELP_TOPICS = {
+    "/stt": {
+        "summary": "Speech input settings and controls",
+        "purpose": "Configure Groq Whisper dictation. F7 toggles recording in the full terminal; transcripts remain editable before sending.",
+        "usage": ["/stt", "/stt start", "/stt stop", "/stt cancel", "/stt result"],
+        "subcommands": [("start", "/stt start", "Start recording"), ("stop", "/stt stop", "Finish recording and transcribe"), ("cancel", "/stt cancel", "Discard speech input"), ("result", "/stt result", "Show and acknowledge the latest transcript in the basic prompt")],
+        "examples": ["/stt"], "notes": ["Requires GROQ_API_KEY and sounddevice. In Desktop, use Speech input settings. F7/F9/F10 can be selected; shortcuts require the full TUI to have focus."],
+    },
     "/stop": {
         "summary": "Stop current and pending speech",
         "purpose": "Stops the current spoken reply and cancels pending speech without muting future replies.",

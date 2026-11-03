@@ -70,10 +70,13 @@ const ids = [
   'line-c',
   'btn-pin',
   'btn-minimize',
-  'notice',
+  'notice', 'btn-mic', 'btn-speech-cancel', 'speech-status', 'speech-feedback', 'speech-meter',
+  'btn-speech-settings', 'speech-dialog', 'speech-form', 'speech-model', 'speech-shortcut',
+  'speech-configured', 'speech-setting-error', 'speech-save', 'speech-done', 'btn-stop',
 ];
 const els = Object.fromEntries(ids.map((i) => [i, makeEl(i)]));
 const body = makeEl('body');
+els['speech-dialog'].hidden = true;
 
 let now = 1000;
 const timers = new Map();
@@ -111,6 +114,7 @@ const backend = {
     session_id: 'session_one',
     epoch: 'one',
     audio: null,
+    speech: { phase: 'idle', level: 0, elapsed: 0, error: null, result: null, configured: true, provider: 'groq', shortcut: 'f7', model: 'whisper-large-v3-turbo' },
   },
   history: [],
   messageError: null,
@@ -138,6 +142,29 @@ function fetchStub(url, opts = {}) {
   }
   const payload = opts.body ? JSON.parse(opts.body) : null;
   calls.posts.push([url, payload]);
+  if (url === '/api/stt') {
+    const speech = backend.state.speech;
+    if (backend.speechError) { backend.speechError = false; return respond(400, { error: 'Microphone unavailable. Your draft is safe.' }); }
+    if (payload.action === 'start') Object.assign(speech, { phase: 'recording', error: null, result: null });
+    if (payload.action === 'stop') Object.assign(speech, { phase: 'transcribing', level: 0 });
+    if (payload.action === 'cancel') Object.assign(speech, { phase: 'idle', result: null, level: 0 });
+    if (payload.action === 'configure') Object.assign(speech, payload.settings);
+    if (payload.action === 'ack') {
+      if (backend.ackError) { backend.ackError = false; return respond(503, { error: 'Retry ack' }); }
+      if (speech.result && speech.result.id === payload.result_id) speech.result = null;
+    }
+    if (backend.deferSpeech) {
+      backend.deferSpeech = false;
+      const captured = JSON.parse(JSON.stringify(speech));
+      return new Promise((resolve) => { backend.releaseSpeech = () => resolve({ ok: true, status: 200, json: async () => captured }); });
+    }
+    return respond(200, { ...speech });
+  }
+  if (url === '/api/stop') {
+    Object.assign(backend.state.speech, { phase: 'idle', result: null, level: 0 });
+    backend.state.state = 'idle'; backend.state.audio = null;
+    return respond(200, backend.state);
+  }
   if (url === '/api/voice') {
     backend.state.voice.enabled = payload.enabled;
     return respond(200, backend.state);
@@ -159,7 +186,7 @@ const sandbox = {
   window,
   location: { hash: '#tok' },
   performance: { now: () => now },
-  document: { body, getElementById: (id) => els[id], createElement: () => makeEl('x') },
+  document: { body, hasFocus: () => backend.focused !== false, getElementById: (id) => els[id], createElement: () => makeEl('x') },
   requestAnimationFrame: (cb) => {
     rafCb = cb;
   },
@@ -377,6 +404,83 @@ function frame() {
   backend.releaseState();
   await flush();
   assert.strictEqual(window.AuralisClient.state().sessionId, 'newer_session');
+  // Native microphone capture is deliberate; typing remains editable and sends wait.
+  backend.state.session_id = 'newer_session';
+  backend.state.state = 'idle';
+  backend.state.audio = null;
+  await pollOnce();
+  const speechPosts = () => calls.posts.filter(([url]) => url === '/api/stt');
+  const key = (name, extras = {}) => window.listeners.keydown({ key: name, preventDefault() { this.defaultPrevented = true; }, ...extras });
+  els['chat-input'].value = 'Typed before recording';
+  key('F7'); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'recording');
+  assert.equal(window.AuralisClient.state().busy, true);
+  assert.equal(els['chat-send'].disabled, true);
+  assert.equal(els['chat-input'].disabled, false);
+  assert.equal(Sage.state, 'listening');
+  assert.deepEqual(speechPosts().at(-1)[1], { action: 'start', session_id: 'newer_session' });
+  const messageCount = calls.posts.filter(([url]) => url === '/api/message').length;
+  await els['chat-form'].listeners.submit({ preventDefault() {} });
+  assert.equal(calls.posts.filter(([url]) => url === '/api/message').length, messageCount);
+  backend.state.speech.level = 0.63;
+  await pollOnce();
+  assert.equal(calls.levels.at(-1), 0.63, 'avatar uses native microphone level');
+  key('F7'); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'transcribing');
+  els['chat-input'].value += ' and while waiting';
+  backend.ackError = true;
+  backend.state.speech = { ...backend.state.speech, phase: 'idle', result: { id: 1, session_id: 'newer_session', text: 'A spoken thought' } };
+  await pollOnce();
+  assert.equal(els['chat-input'].value, 'Typed before recording and while waiting\nA spoken thought');
+  await pollOnce();
+  assert.equal(els['chat-input'].value, 'Typed before recording and while waiting\nA spoken thought', 'retrying an ack never repeats the transcript');
+  assert.equal(speechPosts().filter(([, data]) => data.action === 'ack' && data.result_id === 1).length, 2);
+  assert.equal(calls.posts.filter(([url]) => url === '/api/message').length, messageCount, 'transcripts never auto-send');
+  // Cross-chat and canceled results are acknowledged and discarded.
+  backend.state.speech.result = { id: 2, session_id: 'older_session', text: 'Wrong chat' };
+  await pollOnce();
+  assert(!els['chat-input'].value.includes('Wrong chat'));
+  await els['btn-mic'].listeners.click(); await flush();
+  key('Escape'); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'idle');
+  backend.state.speech.result = { id: 3, session_id: 'newer_session', text: 'Canceled text' };
+  await pollOnce();
+  assert(!els['chat-input'].value.includes('Canceled text'));
+  // Cancel queues behind a slow start, and suppressed results cannot revive it.
+  backend.deferSpeech = true;
+  els['btn-mic'].listeners.click(); await flush();
+  key('Escape');
+  backend.releaseSpeech(); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'idle');
+  assert.deepEqual(speechPosts().slice(-2).map(([, data]) => data.action), ['start', 'cancel']);
+  // Microphone errors preserve the latest draft and recover on a new attempt.
+  const draft = els['chat-input'].value;
+  backend.speechError = true;
+  await els['btn-mic'].listeners.click(); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'error');
+  assert.equal(els['chat-input'].value, draft);
+  assert(els['speech-status'].textContent.includes('Microphone unavailable'));
+  // Configurable focus-only shortcuts never intercept Ctrl+C or held-key repeats.
+  await els['btn-speech-settings'].listeners.click();
+  els['speech-model'].value = 'whisper-large-v3'; els['speech-shortcut'].value = 'f9';
+  await els['speech-form'].listeners.submit({ preventDefault() {} }); await flush();
+  assert.equal(window.AuralisClient.state().speech.shortcut, 'f9');
+  assert.equal(els['speech-dialog'].hidden, true);
+  const beforeShortcut = speechPosts().length;
+  key('F7'); key('F9', { repeat: true }); key('c', { ctrlKey: true });
+  backend.focused = false; key('F9'); backend.focused = true; await flush();
+  assert.equal(speechPosts().length, beforeShortcut);
+  key('F9'); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'recording');
+  await els['btn-stop'].listeners.click(); await flush();
+  assert.equal(window.AuralisClient.state().speech.phase, 'idle');
+  assert.equal(els['chat-input'].value, draft);
+  backend.state.busy = true; await pollOnce();
+  assert.equal(window.AuralisClient.state().backendBusy, true);
+  assert.equal(els['chat-send'].disabled, true);
+  const beforeTerminalBusy = speechPosts().length; key('F9'); await flush();
+  assert.equal(speechPosts().length, beforeTerminalBusy, 'terminal work shares the same busy gate');
+  backend.state.busy = false; await pollOnce();
   console.log('chat.js harness: all checks passed');
 })().catch((e) => {
   console.error(e);
